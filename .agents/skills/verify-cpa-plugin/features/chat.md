@@ -70,4 +70,4 @@ bun run scripts/audit-traffic-diff.ts --session WorkBuddy_20260913_171327.json
 - 流式缺 `[DONE]` 或没有 `usage` -> 先怀疑响应体被中途掐断，而不是上游没上报：插件侧对话请求若挂了整体超时（如 `http.Client.Timeout`），长思考流会在读到一半时断连，尾部帧连 `usage` 一起消失，表现为缓存命中与 `reasoning_tokens` 时有时无；`verify-chat.go` 会区分「读取中断」与「缺终止帧」两类失败
 - `403 code 11140 request illegal` -> 曾被怀疑是字段构造问题，当时所用账号已确认不可用，因此尚未定性，在可用账号复现之前不要据此改字段
 - 桌面档与 CLI 档头部不同 -> 两者不可混用，默认都取桌面档
-- 日志边界 -> 见 `docs/adr/0002`，只记方法、路径、状态码、耗时与模型名，不记请求体与回复正文
+- 日志边界 -> 见 `docs/adr/plugins/workbuddy/0002`，只记方法、路径、状态码、耗时与模型名，不记请求体与回复正文

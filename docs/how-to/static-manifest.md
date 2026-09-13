@@ -51,4 +51,4 @@ bun run scripts/audit-traffic-diff.ts --session <文件名片段>
 jq .provenance plugins/workbuddy/data/static-config.json
 ```
 
-决策背景见 [ADR-0005](../adr/0005-static-manifest-provenance.md)。CI provenance 门禁尚未实现，进度见 issue。
+决策背景见 [ADR-0005](../adr/plugins/workbuddy/0005-static-manifest-provenance.md)。CI provenance 门禁尚未实现，进度见 [issue #1](https://github.com/shelken/cpa-plugins/issues/1)。

@@ -4,7 +4,7 @@
 
 ## Status
 
-accepted
+accepted（决策已定；Consequences 第 1 条的 CI provenance 门禁尚未实现，进度见 [issue #1](https://github.com/shelken/cpa-plugins/issues/1)）
 
 ## Considered Options
 
