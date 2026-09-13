@@ -76,7 +76,7 @@
       "name": "WorkBuddy",
       "description": "Tencent WorkBuddy / CodeBuddy Provider Plugin for CLIProxyAPI",
       "author": "shelken",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "repository": "https://github.com/shelken/cpa-plugins",
       "homepage": "https://github.com/shelken/cpa-plugins",
       "license": "MIT",
@@ -93,21 +93,21 @@
             "goos": "darwin",
             "sha256": "fc3a44818b695da22376d1473beeb932e0c7dd1515b33e415c84e74d284b244b",
             "size": 2725294,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.1/workbuddy_0.1.1_darwin_arm64.zip"
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.2/workbuddy_0.1.2_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
             "sha256": "35af383a601279193b89c1fee8902cf85c1d3c230c78eb2f25b21406679551c2",
             "size": 5361662,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.1/workbuddy_0.1.1_linux_amd64.zip"
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.2/workbuddy_0.1.2_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
             "sha256": "2f78ae0c697af5621fd28b7f3f3ac7db014d2d743ac8aa739a64f8ab9530ac36",
             "size": 4853391,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.1/workbuddy_0.1.1_linux_arm64.zip"
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.2/workbuddy_0.1.2_linux_arm64.zip"
           }
         ],
         "type": "direct"
