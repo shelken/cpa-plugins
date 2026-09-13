@@ -84,14 +84,17 @@ curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}\n' "$BASE/v0/management
 
 版本、插件清单、能力声明一律从管理面读，不要从部署仓库里推断：仓库里的镜像 tag 与 Pod 实际运行的版本可能不一致。
 
-**密钥只走文件，不进命令回显。** 按优先级三选一：
+**密钥只走文件，不进命令回显。** 按优先级取一个：
 
-1. 请用户把密钥写进 `~/.cache/cpa-plugins/keys/<名字>`（权限 600）。之后全程只写 `$(cat …)`，不 `echo`、不 `sed`、不落日志。
-2. 用户已在浏览器登录管理面时，用 CDP 从页面里取，**直接重定向进同一个文件，不打印**。
-3. 都不行就请用户自己在页面里完成需要鉴权的动作，agent 只读页面呈现的结果。
+1. 环境里有 `sec-run` 这类取密工具时，直接 `K=$(sec-run printenv <变量名>)`，值只留在变量里。取值失败、或值不被目标接受，就停下来问用户，不要改试别的凭据。
+2. 否则请用户把密钥写进 `~/.cache/cpa-plugins/keys/<名字>`（权限 600）。之后全程只写 `$(cat …)`，不 `echo`、不 `sed`、不落日志。
+3. 用户已在浏览器登录管理面时，用 CDP 从页面里取，**直接重定向进同一个文件，不打印**。
+4. 都不行就请用户自己在页面里完成需要鉴权的动作，agent 只读页面呈现的结果。
+
+被拒时先分清是值错还是头错：同一个 `Authorization: Bearer` 头在本机沙箱可用、在目标返回 `invalid management key`，那是值不属于该实例，不是头写错了。
 
 ```bash
-K=$(cat ~/.cache/cpa-plugins/keys/<名字>)
+K=$(sec-run printenv <变量名>)   # 或 K=$(cat ~/.cache/cpa-plugins/keys/<名字>)
 curl -s --noproxy '*' -H "Authorization: Bearer $K" "$BASE/v0/management/plugins" \
   | jq -c '.plugins[]|{id,registered,enabled,effective_enabled,supports_quota,version:.metadata.version}'
 ```
