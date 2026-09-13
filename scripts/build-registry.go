@@ -114,11 +114,18 @@ func main() {
 		return plugins[i].ID < plugins[j].ID
 	})
 
-	registry := Registry{
-		SchemaVersion: 1,
-		Plugins:       plugins,
+	schemaVersion := 1
+	for _, p := range plugins {
+		if p.Install != nil {
+			schemaVersion = 2
+			break
+		}
 	}
 
+	registry := Registry{
+		SchemaVersion: schemaVersion,
+		Plugins:       plugins,
+	}
 	outputBytes, err := json.MarshalIndent(registry, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error serializing registry: %v\n", err)
