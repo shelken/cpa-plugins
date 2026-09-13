@@ -27,6 +27,7 @@ Preconditions:
 
 ## Gotchas
 
+- 宿主低于 `v7.2.159` 时额度能力完全不存在：`supports_quota` 为 `null`，`quota/providers` 返回 404。这不是插件缺陷，升级宿主即可，插件无需改动。实测见 `~/.cache/cpa-plugins/evidence/workbuddy/2026-09-13-host-compat/`。
 - 缺 `*Precise` 字段的字符串处理会直接 `502`，错误形如 `cannot unmarshal string into Go struct field ... of type float64`。这类缺陷与账号无关，一律用离线夹具修与验收，不要去线上试。
 - 多发时间范围过滤条件（`PackageEndTimeRangeBegin` / `End`）会导致按范围裁剪套餐、少算额度。字段只在抓包里发的时候才发。
 - 无凭据时只能验声明与夹具。不要把"声明在列"说成"额度能拉"。

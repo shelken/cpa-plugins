@@ -34,6 +34,17 @@ cd plugins/workbuddy && CGO_ENABLED=1 go build -buildmode=c-shared -o /tmp/verif
 nm -gU /tmp/verify/workbuddy.dylib | grep -c cliproxy   # 期望 4: init / Call / Free / Shutdown
 ```
 
+**宿主版本要求。** 能力面由宿主版本决定，插件声明不算数。宿主不校验插件的 SDK 版本，所以版本不匹配不会报错，只会静默少功能：
+
+|能力|最低宿主版本|依据|
+|:---|:---|:---|
+|装载、模型、扫码登录|早于 `v7.2.158` 即支持|按 SDK `v7.2.159` 构建的产物在 `v7.2.158` 宿主上装载成功，返回 21 个模型与真实登录 URL|
+|额度|`v7.2.159`|`quota.*` 方法在该版引入。同一产物在 `v7.2.158` 上 `supports_quota` 为 `null`，`quota/providers` 返回 404|
+
+拿不准宿主版本时，先看装载日志与 Doctor 的能力字段，别从版本号推断。
+
+**插件必须声明在配置里。** `plugins.configs.<id>` 缺失时插件根本不加载：动态库在磁盘上，管理面也只报 `registered: false`，`/v1/models` 为空。从商店安装时宿主会自己补这条；手写或由外部注入配置时要自己写上。
+
 **人工边界。** 离线档、真机档、产物档全部无需用户，自己跑完再说话。凭据档里只有一步不可替代：
 
 1. **手机扫码。** agent 自己就能拿到登录 URL、自己轮询状态、自己确认凭据落盘（见 `features/auth-login.md`），但把那个 URL 变成凭据的动作只能由人完成。做法是把 URL 原样交给用户，等他确认后再轮询，不要自己猜。
