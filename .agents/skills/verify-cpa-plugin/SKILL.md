@@ -53,7 +53,22 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 
 # 启用指定插件配置 (写操作须经确认)
 go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins/<id>/config -method PUT -body '{"enabled":true}'
+
+# 按客户端身份探测 /v1 接口, 客户端密钥由脚本就地取得
+go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models
 ```
+
+## 密钥纪律
+
+生产取数一律走仓库脚本，密钥只在进程内流转：
+
+- 管理密钥只经 `sec-run printenv CPA_TOKEN` 隐式读取，不退化成环境变量文件，也不出现在命令行与终端输出里
+- 客户端密钥由脚本就地取自管理面（`scripts/verify-chat.go` 与 `management-api.go -auth client` 都这样做），只进请求头
+- 直连 `/v1` 的探测用 `-auth client`，不要手抄密钥拼 `curl -H "Authorization: Bearer ..."`
+- 管理面响应里的密钥与凭据字段默认打码，判断「是哪一条、换没换」看 `<redacted len=.. sha256=..>` 的长度与前 4 字节哈希就够
+- 失败信息不带取值：脚本出错时只回显 URL 与状态码
+
+每次驱动都是独立的 shell，上一条里 `export` 的变量在下一条里不存在；需要复用的取值要么写进同一条命令，要么由脚本参数传入。
 
 ## Evidence
 
@@ -73,7 +88,7 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 
 仓库内置维护工具：
 
-- `scripts/management-api.go`：管理面单点交互工具，自动由 `sec-run` 注入 `CPA_TOKEN` 执行鉴权，响应里的密钥与凭据字段默认打码
+- `scripts/management-api.go`：管理面单点交互工具，自动由 `sec-run` 注入 `CPA_TOKEN` 执行鉴权，响应里的密钥与凭据字段默认打码；带 `-auth client` 时改为按客户端身份访问 `/v1`，客户端密钥由进程自己从管理面取
 - `scripts/verify-chat.go`：对话链路验收入口，一次跑完流式帧合规、思维链、上下文记忆、缓存命中、思考深度与非流式聚合
 - `scripts/dev-sandbox.go`：端到端沙箱启动与多项断言套件，只覆盖装载与报送，替代不了真机对话验收
 - `scripts/check-plugins.go`：检查仓库清单、构建矩阵、声明平台一致性

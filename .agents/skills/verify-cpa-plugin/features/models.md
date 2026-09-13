@@ -13,22 +13,22 @@
 - 客户端配置宿主地址后获取 `/v1/models` 列表
 - 在客户端模型选择下拉框中直接看到该渠道对应的模型名
 
-## Driving it with curl
+## Driving it
 
 Preconditions:
 
 - 插件已在宿主中处于启用状态（`effective_enabled` 为 `true`）
-- 本地沙箱无需凭据直接访问；生产实例访问 `/v1/models` 须附带合法客户端密钥
+- 本地沙箱无需凭据直接访问；生产实例访问 `/v1/models` 须附带合法客户端密钥，密钥由脚本就地取得，不要手抄到命令行
 
 - **核对在列模型清单。** 通过客户端接口拉取完整模型集合：
   ```bash
-  curl -s http://<host>:8317/v1/models -H "Authorization: Bearer <api-key>" | jq -r '.data[].id'
+  go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models | jq -r '.data[].id'
   ```
   输出列表须包含插件静态数据文件 `data/static-config.json` 中声明的全部模型项
 
 - **验证黑名单过滤。** 确认被剔除的模型没有对外暴露：
   ```bash
-  curl -s http://<host>:8317/v1/models -H "Authorization: Bearer <api-key>" \
+  go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models \
     | jq -r '.data[].id' | grep -E '^(auto|default|hunyuan-3b)$'
   ```
   预期无输出即为过滤生效。剔除名单与前缀规则见 `plugins/workbuddy/models.go` 的 `isModelAllowed`，该名单会随官方客户端版本变化，以代码为准

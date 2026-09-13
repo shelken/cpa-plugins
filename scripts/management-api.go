@@ -16,18 +16,35 @@ import (
 	"time"
 )
 
+// 管理面单点交互工具。密钥不出现在命令行里: 管理密钥经 sec-run 隐式读取, 客户端密钥
+// 需要时由本进程从管理面就地取得, 两者都只进请求头, 响应回显默认打码。
 func main() {
 	base := flag.String("base", "http://127.0.0.1:18317", "目标地址")
 	path := flag.String("path", "/v0/management/plugins", "管理面路径")
 	method := flag.String("method", http.MethodGet, "请求方法")
 	body := flag.String("body", "", "请求体")
+	auth := flag.String("auth", "management", "鉴权身份: management 用管理密钥, client 用就地取得的客户端密钥")
 	flag.Parse()
 
-	out, err := exec.Command("sec-run", "printenv", "CPA_TOKEN").Output()
-	key := strings.TrimSpace(string(out))
-	if err != nil || key == "" {
-		fmt.Fprintln(os.Stderr, "[-] 未能通过 sec-run 读取到 CPA_TOKEN，不发请求")
+	managementToken, err := secRun("CPA_TOKEN")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] 未能隐式读取管理密钥: %v, 不发请求\n", err)
 		os.Exit(3)
+	}
+
+	headerValue := managementToken
+	if strings.EqualFold(strings.TrimSpace(*auth), "client") {
+		clientKey, err := fetchClientKey(*base, managementToken)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 未能就地取得客户端密钥: %v, 不发请求\n", err)
+			os.Exit(3)
+		}
+		if clientKey != "" {
+			headerValue = "Bearer " + clientKey
+		} else {
+			// 实例没有配置任何客户端密钥时 /v1 不鉴权, 不带鉴权头即可。
+			headerValue = ""
+		}
 	}
 
 	endpoint := strings.TrimRight(*base, "/") + "/" + strings.TrimLeft(*path, "/")
@@ -41,7 +58,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[-] 构造请求失败: %v\n", err)
 		os.Exit(2)
 	}
-	req.Header.Set("Authorization", key)
+	if headerValue != "" {
+		req.Header.Set("Authorization", headerValue)
+	}
 	if *body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -66,6 +85,59 @@ func main() {
 	if resp.StatusCode >= 300 {
 		os.Exit(1)
 	}
+}
+
+// secRun 只经 sec-run 隐式读取密钥, 取值不落在命令行里。
+func secRun(name string) (string, error) {
+	out, err := exec.Command("sec-run", "printenv", name).Output()
+	if err != nil {
+		return "", fmt.Errorf("sec-run printenv %s 执行失败", name)
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return "", fmt.Errorf("sec-run 没有给出 %s", name)
+	}
+	return value, nil
+}
+
+// fetchClientKey 从管理面就地取一个客户端密钥, 供直连 /v1 的探测使用。
+// 密钥只在进程内流转: 回显走打码, 解析用原始响应, 任何错误信息都不带取值。
+// 返回空串表示实例没有配置客户端密钥, 此时 /v1 不鉴权。
+func fetchClientKey(base, managementToken string) (string, error) {
+	endpoint := strings.TrimRight(base, "/") + "/v0/management/api-keys"
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", managementToken)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("管理面 /v0/management/api-keys 返回 HTTP %d", resp.StatusCode)
+	}
+
+	var doc struct {
+		Keys []string `json:"api-keys"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return "", fmt.Errorf("解析 api-keys 响应失败: %w", err)
+	}
+	for _, key := range doc.Keys {
+		if strings.TrimSpace(key) != "" {
+			return key, nil
+		}
+	}
+	return "", nil
 }
 
 // 管理面会原样回吐各类密钥与凭据, 终端输出是它们唯一会外泄的出口, 因此默认全部打码。
