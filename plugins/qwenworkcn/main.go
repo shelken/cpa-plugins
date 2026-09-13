@@ -93,6 +93,7 @@ type registrationCapability struct {
 	ExecutorInputFormats  []string                     `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
 	QuotaProvider         bool                         `json:"quota_provider"`
+	ManagementAPI         bool                         `json:"management_api"`
 }
 
 type rpcIdentifierResponse struct {
@@ -335,6 +336,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 				ExecutorInputFormats:  []string{"chat-completions"},
 				ExecutorOutputFormats: []string{"chat-completions"},
 				QuotaProvider:         true,
+				ManagementAPI:         true,
 			},
 		})
 
@@ -487,6 +489,12 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			Provider: "qwenworkcn",
 			Models:   models,
 		})
+
+	case pluginabi.MethodManagementRegister:
+		return handleManagementRegister()
+
+	case pluginabi.MethodManagementHandle:
+		return handleManagementHandle(request)
 
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
