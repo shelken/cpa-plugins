@@ -44,7 +44,7 @@ plugins:
 
 ## 发布与安装
 
-发布由标签触发，标签形如 `workbuddy/v0.1.0`，构建 `linux/amd64`、`linux/arm64`、`darwin/arm64` 三个平台。
+发布由标签触发，标签形如 `workbuddy/v<version>`，构建 `linux/amd64`、`linux/arm64`、`darwin/arm64` 三个平台
 
 宿主对产物命名有硬性要求，任一处改动都会导致安装失败：
 
@@ -55,7 +55,7 @@ plugins:
 | 包内条目 | 只能有一个动态库，位于压缩包根级，名为 `<id><扩展名>` |
 | 扩展名 | linux 用 `.so`，darwin 用 `.dylib` |
 
-`install.artifacts[].sha256` 是必填项，缺失时报 `artifact checksum missing`，不匹配报 `artifact checksum mismatch`。清单当前尚未回填真实哈希，因此首次发布前必须补齐：发布流程产出 `checksums.txt` 后，把对应哈希写回 `plugin.json` 并重新生成根目录 `registry.json`，否则商店安装会失败。
+`install.artifacts[].sha256` 是必填项，缺失时报 `artifact checksum missing`，不匹配报 `artifact checksum mismatch`。哈希只能由真实产物得出，回填与验收的完整流程见根目录 `README.md` 的「发布流程」
 
 ## 贡献
 

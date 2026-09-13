@@ -4,9 +4,9 @@ CLIProxyAPI 的轻量级健康与分发验证探针插件。
 
 ## 功能
 
-- **链路验证**：验证 C ABI 动态链接库（.so / .dylib）在 CLIProxyAPI 宿主中的发现、装载与初始化流程。
-- **使用量统计**：通过 `usage_plugin` 观察每个完成的代理请求并递增计数。
-- **状态接口**：通过 `management_api` 注册 `/v0/management/plugins/echo-probe/status` 页面与 JSON 响应。
+- **链路验证**：证实 C ABI 动态链接库（`.so` 或 `.dylib`）能被 CLIProxyAPI 宿主发现、装载并初始化
+- **使用量统计**：通过 `usage_plugin` 观察每个完成的代理请求并递增计数
+- **状态接口**：通过 `management_api` 注册 `/v0/management/plugins/echo-probe/status` 页面与 JSON 响应
 
 ## 快速上手
 
@@ -33,11 +33,12 @@ curl -H "Authorization: Bearer <your-management-key>" http://127.0.0.1:8317/v0/m
 {
   "status": "ok",
   "plugin": "echo-probe",
-  "version": "0.1.0",
   "observed_requests": 0,
   "message": "cpa-plugins probe healthy and running"
 }
 ```
+
+响应另含 `version` 字段，取值由插件自身报告
 
 ## 配置项
 
