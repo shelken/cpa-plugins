@@ -324,6 +324,12 @@ func (s *sandbox) assert() error {
 	if err := s.assertModels(); err != nil {
 		return err
 	}
+	if err := s.assertResourcePage(); err != nil {
+		return err
+	}
+	if err := s.assertPluginMenus(); err != nil {
+		return err
+	}
 	s.reportConfigFields()
 	s.reportQuotaProvider()
 	return nil
@@ -364,9 +370,12 @@ func (s *sandbox) assertModels() error {
 		return nil
 	}
 
+	// 插件注册侧可能给模型 id 加前缀 (workbuddy 的 enable-model-prefix, 默认开启),
+	// 清单声明的是裸 id; 断言按「前缀 id 或裸 id 命中其一」匹配。
 	var missing []string
 	for _, id := range declared {
-		if !served[id] {
+		prefixed := s.pluginID + "/" + id
+		if !served[id] && !served[prefixed] {
 			missing = append(missing, id)
 		}
 	}
@@ -377,6 +386,62 @@ func (s *sandbox) assertModels() error {
 	fmt.Printf("[+] 断言通过: /v1/models 返回 %d 个模型, 清单声明的 %d 个全部在列\n",
 		len(served), len(declared))
 	return nil
+}
+
+// assertResourcePage 验证插件 resource 页面可被宿主服务 (面板 iframe 数据源)。
+func (s *sandbox) assertResourcePage() error {
+	body, status, err := s.httpGet("/v0/resource/plugins/"+s.pluginID+"/quota", false)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("GET /v0/resource/plugins/%s/quota 返回 %d: %s", s.pluginID, status, truncate(body, 200))
+	}
+	if !strings.Contains(body, s.pluginID) {
+		return fmt.Errorf("resource 页面内容不含 %q, 疑似服务了错误内容: %s", s.pluginID, truncate(body, 200))
+	}
+	fmt.Println("[+] 断言通过: 插件 resource 页面已注册且可访问")
+	return nil
+}
+
+// assertPluginMenus 验证管理面 plugins 列表暴露了插件菜单 (面板侧边栏入口)。
+func (s *sandbox) assertPluginMenus() error {
+	body, status, err := s.httpGet("/v0/management/plugins", true)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("GET /v0/management/plugins 返回 %d: %s", status, truncate(body, 200))
+	}
+
+	var payload struct {
+		Plugins []struct {
+			ID    string `json:"id"`
+			Menus []struct {
+				Path string `json:"path"`
+				Menu string `json:"menu"`
+			} `json:"menus"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return fmt.Errorf("解析 /v0/management/plugins 响应失败: %w", err)
+	}
+
+	for _, plugin := range payload.Plugins {
+		if plugin.ID != s.pluginID {
+			continue
+		}
+		if len(plugin.Menus) == 0 {
+			return fmt.Errorf("插件 %s 未注册任何菜单, 面板侧边栏不会显示", s.pluginID)
+		}
+		menus := make([]string, 0, len(plugin.Menus))
+		for _, menu := range plugin.Menus {
+			menus = append(menus, menu.Menu+" ("+menu.Path+")")
+		}
+		fmt.Printf("[+] 断言通过: 插件菜单已注册: %s\n", strings.Join(menus, ", "))
+		return nil
+	}
+	return fmt.Errorf("/v0/management/plugins 列表中没有找到插件 %s", s.pluginID)
 }
 
 // declaredModels 读取插件内嵌静态清单里声明的模型 id。
@@ -453,7 +518,6 @@ func (s *sandbox) reportConfigFields() {
 		}
 	}
 }
-
 
 func (s *sandbox) httpGet(path string, management bool) (string, int, error) {
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", s.port, path)

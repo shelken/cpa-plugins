@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkBuddy Quota</title>
+<style>
+  :root {
+    --bg: #111318;
+    --card: #1a1d24;
+    --border: #2a2e38;
+    --text: #e6e8ec;
+    --muted: #8b90a0;
+    --accent: #4f8cff;
+    --high: #34c77b;
+    --mid: #e0a63a;
+    --low: #e05a4f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+  }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  header h1 { font-size: 16px; margin: 0; }
+  header button { margin-left: auto; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+    padding: 6px 14px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { filter: brightness(1.1); }
+  #keybox {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; margin-bottom: 16px;
+  }
+  #keybox.hidden { display: none; }
+  #keybox input {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 6px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .card .name { font-weight: 600; }
+  .card .tier { color: var(--muted); margin-left: 8px; font-size: 12px; }
+  .card .error { color: var(--low); font-size: 13px; }
+  .bucket { margin-top: 10px; }
+  .bucket .desc { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .track {
+    height: 6px; background: var(--border); border-radius: 3px; margin-top: 4px; overflow: hidden;
+  }
+  .fill { height: 100%; border-radius: 3px; background: var(--high); transition: width .3s; }
+  .fill.mid { background: var(--mid); }
+  .fill.low { background: var(--low); }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 32px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WorkBuddy Quota</h1>
+  <button id="refresh">刷新</button>
+</header>
+<div id="keybox" class="hidden">
+  <div>未能自动读取管理密钥，请手动粘贴：</div>
+  <input type="password" id="key" placeholder="management key" autocomplete="off">
+</div>
+<div id="content" class="empty">加载中…</div>
+<script>
+(() => {
+  const content = document.getElementById('content');
+  const keybox = document.getElementById('keybox');
+  const keyInput = document.getElementById('key');
+
+  // ---- 管理密钥 ----
+  // 面板把登录状态持久化在 localStorage['cli-proxy-auth']:
+  //   JSON.stringify({state:{managementKey,...},version}) 再经 enc::v1:: 混淆
+  //   (base64( XOR(utf8(value), utf8('cli-proxy-api-webui::secure-storage|host|ua')) ))。
+  // 本页面与面板同源 (iframe 无 sandbox), 可直接读取。读取失败时降级为手贴密钥。
+  const ENC_PREFIX = 'enc::v1::';
+  const SECRET_SALT = 'cli-proxy-api-webui::secure-storage';
+
+  function keyBytes() {
+    return new TextEncoder().encode(SECRET_SALT + '|' + location.host + '|' + navigator.userAgent);
+  }
+  function xorBytes(bytes, key) {
+    const out = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) out[i] = bytes[i] ^ key[i % key.length];
+    return out;
+  }
+  function deobfuscate(payload) {
+    if (!payload || !payload.startsWith(ENC_PREFIX)) return payload;
+    const raw = atob(payload.slice(ENC_PREFIX.length));
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return new TextDecoder().decode(xorBytes(bytes, keyBytes()));
+  }
+
+  let cachedKey = null;
+  function getManagementKey() {
+    if (cachedKey) return cachedKey;
+    let raw = null;
+    try { raw = localStorage.getItem('cli-proxy-auth'); } catch (_) { /* 跨源时抛错 */ }
+    if (raw) {
+      try {
+        const parsed = JSON.parse(deobfuscate(raw));
+        if (parsed && parsed.state && parsed.state.managementKey) {
+          cachedKey = parsed.state.managementKey;
+          return cachedKey;
+        }
+      } catch (_) { /* 格式不符, 走手贴 */ }
+    }
+    return null;
+  }
+
+  // ---- 请求 ----
+  async function api(path, options) {
+    const key = getManagementKey();
+    if (!key) { keybox.classList.remove('hidden'); throw new Error('未提供管理密钥'); }
+    const resp = await fetch(path, Object.assign({
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+    }, options || {}));
+    if (!resp.ok) {
+      let detail = 'HTTP ' + resp.status;
+      try {
+        const body = await resp.json();
+        if (body && body.error) detail += ': ' + body.error;
+      } catch (_) { /* 非 JSON 错误体 */ }
+      if (resp.status === 401) keybox.classList.remove('hidden');
+      throw new Error(detail);
+    }
+    return resp.json();
+  }
+
+  // ---- 渲染 ----
+  function esc(text) {
+    const div = document.createElement('div');
+    div.textContent = String(text == null ? '' : text);
+    return div.innerHTML;
+  }
+
+  function bucketColor(fraction) {
+    if (fraction > 0.7) return '';
+    if (fraction > 0.3) return ' mid';
+    return ' low';
+  }
+
+  function renderBuckets(buckets) {
+    return (buckets || []).map((bucket) => {
+      const pct = Math.max(0, Math.min(100, (bucket.remainingFraction || 0) * 100));
+      return '<div class="bucket">'
+        + '<div class="desc"><span>' + esc(bucket.description) + '</span>'
+        + '<span>' + pct.toFixed(0) + '%</span></div>'
+        + '<div class="track"><div class="fill' + bucketColor(pct) + '" style="width:' + pct + '%"></div></div>'
+        + '</div>';
+    }).join('');
+  }
+
+  function renderCard(entry) {
+    if (entry.error) {
+      return '<div class="card"><div class="name">' + esc(entry.name) + '</div>'
+        + '<div class="error">' + esc(entry.error) + '</div></div>';
+    }
+    const quota = entry.quota || {};
+    const tier = quota.subscription ? (quota.subscription.tierName || quota.subscription.plan || '') : '';
+    const groups = quota.groups || [];
+    const body = groups.length
+      ? groups.map((group) => renderBuckets(group.buckets)).join('')
+      : '<div class="muted">暂无窗口数据</div>';
+    return '<div class="card">'
+      + '<div><span class="name">' + esc(entry.name) + '</span>'
+      + (tier ? '<span class="tier">' + esc(tier) + '</span>' : '')
+      + '</div>' + body + '</div>';
+  }
+
+  async function loadAll() {
+    content.className = 'empty';
+    content.textContent = '加载中…';
+    let files;
+    try {
+      files = await api('/v0/management/auth-files');
+    } catch (err) {
+      content.textContent = err.message;
+      return;
+    }
+    const credentials = (files.files || []).filter((file) =>
+      file.provider === 'workbuddy' || file.type === 'workbuddy');
+    if (!credentials.length) {
+      content.textContent = '没有 WorkBuddy 凭据';
+      return;
+    }
+    content.className = '';
+    content.innerHTML = credentials.map((credential) =>
+      renderCard({ name: credential.name || credential.auth_index || credential.id }));
+    await Promise.all(credentials.map(async (credential, index) => {
+      let quota = null;
+      let error = null;
+      try {
+        quota = await api('/v0/management/plugins/workbuddy/quota', {
+          method: 'POST',
+          body: JSON.stringify({ auth_index: credential.auth_index }),
+        });
+      } catch (err) {
+        error = err.message;
+      }
+      const card = { name: credential.name || credential.auth_index || credential.id };
+      if (error) card.error = error; else card.quota = quota;
+      // 只替换自己的卡片, 单卡失败不影响其他卡。
+      content.children[index].outerHTML = renderCard(card);
+    }));
+  }
+
+  document.getElementById('refresh').addEventListener('click', loadAll);
+  keyInput.addEventListener('input', () => {
+    cachedKey = keyInput.value.trim() || null;
+  });
+  keyInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') loadAll();
+  });
+
+  loadAll();
+})();
+</script>
+</body>
+</html>
