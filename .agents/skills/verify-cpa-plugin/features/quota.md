@@ -1,34 +1,37 @@
-# 额度
+# 额度查询与版本门禁
 
-用户视角：管理面板能看到这个渠道的套餐余量，而不是一个空白或报错。
+管理面板提供各渠道实时配额查询，该能力由宿主版本门禁控制
 
 ## Sub-features
 
-- `quota-declare` 宿主把插件列进额度提供方
-- `quota-fetch` 拉取实时额度并换算成剩余比例
-- `quota-offline` 无凭据时用离线夹具验证解析，不依赖账号
-- `quota-shape` 服务端把 `*Precise` 字段返回为字符串时仍能解析
+- `quota-providers` 宿主识别具备额度查询能力的已注册插件
+- `quota-fetch` 通过管理接口拉取实时余额并返回格式化比例
 
 ## How to get to it (user POV)
 
-- 管理面板的额度页
-- `GET /v0/management/quota/providers` 看声明，`POST /v0/management/quota/fetch` 拉实数
+- 打开管理界面额度页查看各渠道余额与额度条
+- 概览列表中显示对应渠道的剩余比例
 
-## Driving it with the management API
+## Driving it with management-api.go
 
 Preconditions:
 
-- 沙箱已就绪，管理面命令用 `go run scripts/management-api.go -sandbox workbuddy -path <路径>`
+- 宿主运行版本须满足 `>= v7.2.159`
+- 插件在宿主中处于启用状态且 `supports_quota` 为 `true`
 
-- **能力声明（无凭据可跑）。** `go run scripts/management-api.go -sandbox workbuddy -path /v0/management/quota/providers | jq -c '.'`。列表里有本插件，`display_name` 与 `supported_providers` 符合预期。沙箱的第三条断言已经在做这件事
-- **拉取实数（凭据档）。** 先从 `auth-files` 取 `auth_index`，再 `go run scripts/management-api.go -sandbox workbuddy -method POST -path /v0/management/quota/fetch -body '{"auth_index":"<从 auth-files 取>"}' | jq -c '.'`。返回 200，且 `RemainingFraction` 落在 0 到 1 之间
-- **字符串形态（离线，优先用这条）。** 服务端会把所有 `*Precise` 后缀字段返回成 JSON 字符串（`"500"`、`"499.35"`），非 Precise 的同名字段是数字，同一接口在不同账号下两种形态都可能出现。构造一份字符串形态的响应作为夹具，断言解析成功且剩余比例正确：`cd plugins/workbuddy && go test ./...` 里的额度用例就是这条夹具
-- **请求体形状。** 额度请求体五个字段全部用字符串发送，且不发送时间范围过滤。改动后跑 `bun run scripts/audit-traffic-diff.ts --session WorkBuddy_20260913_174259.json`，额度接口不应有 `Missing` 项
+- **查询额度提供方。** 检查宿主是否成功识别插件的额度扩展点：
+  ```bash
+  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/quota/providers
+  ```
+  预期返回状态码 `HTTP 200`，且列表中包含对应插件条目。若返回 `HTTP 404` 则表明宿主版本过低
+
+- **拉取账号实时额度。** 根据账号凭据索引获取实时余额：
+  ```bash
+  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/quota/fetch -method POST -body '{"auth_index":"<auth-index>"}'
+  ```
+  输出包含剩余配额与换算后的 `RemainingFraction` 百分比
 
 ## Gotchas
 
-- 宿主低于 `v7.2.159` 时额度能力完全不存在：`supports_quota` 为 `null`，`quota/providers` 返回 404。这不是插件缺陷，升级宿主即可，插件无需改动。实测见 `~/.cache/cpa-plugins/evidence/workbuddy/2026-09-13-host-compat/`
-- 缺 `*Precise` 字段的字符串处理会直接 `502`，错误形如 `cannot unmarshal string into Go struct field ... of type float64`。这类缺陷与账号无关，一律用离线夹具修与验收，不要去线上试
-- 多发时间范围过滤条件（`PackageEndTimeRangeBegin` / `End`）会导致按范围裁剪套餐、少算额度。字段只在抓包里发的时候才发
-- 无凭据时只能验声明与夹具。不要把「声明在列」说成「额度能拉」
-- 账号不可用时额度拉取失败属于账号问题，不应记成插件缺陷
+- 管理面板完全不显示额度且接口直接返回 404 -> 宿主运行版本低于 `v7.2.159`，额度路由在此版本尚未实现，需升级宿主镜像
+- 额度查询返回 502 错误 -> 上游返回的部分精确度数值带有字符串格式，插件须使用兼容反序列化类型处理
