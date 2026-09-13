@@ -27,6 +27,7 @@
 ## 快速指路
 
 - 如何连接生产cpa: 阅读~/.omp/agent/models.yml中的cpa找到baseurl, 然后通过 scripts/management-api.go 控制和查询
+- home-ops: 通常在我的active目录下, cpa生产通过gitops部署在那里, 配置也在里面
 
 ## 仓库参考
 
