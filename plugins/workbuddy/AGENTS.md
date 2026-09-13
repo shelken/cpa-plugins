@@ -6,7 +6,7 @@
 
 ## 注意点
 
-- 当初pi-codebuddy-provider 调用的请求头全部都是从cli进行获取的, oauth也是按照cli来的. 因此才有这些差异. 而当前这个cpa插件对齐桌面端.
+- `static-config.json` 需要定时通过`pi-codebuddy-provider`的脚本进行更新
 
 ## 参考仓库
 

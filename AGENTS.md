@@ -18,7 +18,16 @@
 - 为每个插件编写独立的 `README.md`，编写前阅读相关 SKILL
 - 每次提交前，检查对应插件 `README.md` 是否需要更新
 - 严禁在任何 调试/测试/bash 中直接显式读取和使用secret/apikey; 只能隐式读取和使用(例如环境变量).
+- 阅读 docs/adr 了解插件决策
+
+## 注意
+
+- 关于provider类的插件, 统一在注册时带上模型前缀, 且带上配置开关, 避免和其他同id混用
+
+## 快速指路
+
+- 如何连接生产cpa: 阅读~/.omp/agent/models.yml中的cpa找到baseurl, 然后通过 scripts/management-api.go 控制和查询
 
 ## 仓库参考
 
-- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI): 权威主程序，一般在本地仓库 `{kaiyuan-dir}/CLIProxyAPI` 中
+- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI): 权威主程序，一般源码会在本地仓库 `{kaiyuan-dir}/CLIProxyAPI` 中
