@@ -1,0 +1,37 @@
+{
+  "schema_version": 2,
+  "id": "workbuddy",
+  "name": "WorkBuddy",
+  "description": "Tencent WorkBuddy / CodeBuddy Provider Plugin for CLIProxyAPI",
+  "author": "shelken",
+  "version": "0.1.0",
+  "repository": "https://github.com/shelken/cpa-plugins",
+  "homepage": "https://github.com/shelken/cpa-plugins",
+  "license": "MIT",
+  "tags": [
+    "provider",
+    "workbuddy",
+    "codebuddy",
+    "tencent"
+  ],
+  "install": {
+    "type": "direct",
+    "artifacts": [
+      {
+        "goos": "darwin",
+        "goarch": "arm64",
+        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_darwin_arm64.zip"
+      },
+      {
+        "goos": "linux",
+        "goarch": "amd64",
+        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_amd64.zip"
+      },
+      {
+        "goos": "linux",
+        "goarch": "arm64",
+        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_arm64.zip"
+      }
+    ]
+  }
+}
