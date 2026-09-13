@@ -47,6 +47,13 @@
       "install": {
         "artifacts": [
           {
+            "goarch": "arm64",
+            "goos": "darwin",
+            "sha256": "bb723b9294ce0d60db6755646ae4ff3facae20e4f6d9ef10b3242c751a922c77",
+            "size": 1594046,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_darwin_arm64.zip"
+          },
+          {
             "goarch": "amd64",
             "goos": "linux",
             "sha256": "7e15c0a3114b4391bff69dadff0af4823c5621b97730d15bffeb3b10abcadfb6",
