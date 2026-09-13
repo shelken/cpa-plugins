@@ -20,7 +20,8 @@ type Plugin struct {
 	Homepage     string   `json:"homepage,omitempty"`
 	License      string   `json:"license,omitempty"`
 	Tags         []string `json:"tags,omitempty"`
-	AuthRequired bool     `json:"auth_required,omitempty"`
+	AuthRequired bool        `json:"auth_required,omitempty"`
+	Install      interface{} `json:"install,omitempty"`
 }
 
 type Registry struct {

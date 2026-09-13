@@ -27,7 +27,24 @@
         "probe",
         "usage",
         "management"
-      ]
+      ],
+      "install": {
+        "artifacts": [
+          {
+            "goarch": "amd64",
+            "goos": "linux",
+            "sha256": "46a6ad5fc89c21b7a80038cbec383265b8f51503f9a633af6faaa066bd2f0168",
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.0/echo-probe_0.1.0_linux_amd64.zip"
+          },
+          {
+            "goarch": "arm64",
+            "goos": "linux",
+            "sha256": "ea0eddd9e1f716a6001a848ef203f2184fcc25de11ba02e8861d64a45df4350e",
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.0/echo-probe_0.1.0_linux_arm64.zip"
+          }
+        ],
+        "type": "direct"
+      }
     }
   ]
 }
