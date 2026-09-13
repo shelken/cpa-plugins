@@ -19,3 +19,27 @@ _Avoid_: Store index, plugin list, repository catalog
 **Plugin Artifact**:
 A platform-specific zip archive containing the compiled native dynamic library attached to a GitHub Release.
 _Avoid_: Binary package, dynamic link library, release bundle
+
+**Native Provider Plugin**:
+A plugin that registers as an upstream provider with CLIProxyAPI, supplying authentication, model discovery, execution, and quota capabilities directly.
+_Avoid_: Backend adapter, upstream middleware, proxy plugin
+
+**Traffic Field Diff**:
+A structured comparison between request headers and payload keys emitted by a plugin and those observed in real client traffic captures.
+_Avoid_: Packet diff, wire check, traffic dump
+
+**Static Manifest**:
+A pre-compiled, embedded JSON document containing verified endpoints, headers, model specifications, and token budgets for zero-latency runtime consumption.
+_Avoid_: Dynamic config, runtime schema, remote dictionary
+
+**Protocol Baseline**:
+The specific official client whose observed network traffic defines a plugin's request headers, payload shape, and auth handshake.
+_Avoid_: Reference client, target version, compat target
+
+**Identity Profile**:
+The client persona a plugin impersonates when writing request headers, selected independently of how the credential was obtained.
+_Avoid_: Header set, user agent mode, spoof level
+
+**Login Profile**:
+The client persona a plugin impersonates when performing the OAuth handshake, selected independently of the request header identity.
+_Avoid_: Auth mode, login type, credential source

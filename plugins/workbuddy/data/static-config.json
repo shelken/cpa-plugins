@@ -1,0 +1,521 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-13T08:07:02.663Z",
+  "client": {
+    "cliVersion": "2.150.0",
+    "desktopAppVersion": "5.3.11",
+    "userAgent": "CLI/2.150.0",
+    "origin": "https://www.codebuddy.cn",
+    "referer": "https://www.codebuddy.cn/"
+  },
+  "endpoints": {
+    "baseUrl": "https://copilot.tencent.com",
+    "chatCompletions": "/v2/chat/completions",
+    "authState": "/v2/plugin/auth/state?platform=cli",
+    "authToken": "/v2/plugin/auth/token?state=",
+    "tokenRefresh": "/v2/plugin/auth/token/refresh",
+    "userResource": "/v2/billing/meter/get-user-resource",
+    "modelsConfig": "/v3/config"
+  },
+  "headers": {
+    "common": {
+      "Accept": "application/json, text/plain, */*",
+      "Content-Type": "application/json; charset=utf-8",
+      "X-Requested-With": "XMLHttpRequest",
+      "Origin": "https://www.codebuddy.cn",
+      "Referer": "https://www.codebuddy.cn/",
+      "User-Agent": "CLI/2.150.0"
+    },
+    "chat": {
+      "X-Agent-Intent": "craft",
+      "X-IDE-Type": "CLI",
+      "X-IDE-Name": "CLI",
+      "X-IDE-Version": "2.150.0",
+      "X-Private-Data": "false",
+      "X-Product": "",
+      "X-Department-Info": ""
+    },
+    "auth": {
+      "X-Product": "CodeBuddy",
+      "X-Auth-Refresh-Source": "plugin"
+    }
+  },
+  "sanitizations": [
+    {
+      "target": "system",
+      "pattern": "You are Claude Code, Anthropic's official CLI tool for Claude.",
+      "replacement": "You are CodeBuddy, an AI coding assistant powered by Tencent."
+    },
+    {
+      "target": "system",
+      "pattern": "Claude Code",
+      "replacement": "CodeBuddy"
+    }
+  ],
+  "models": [
+    {
+      "id": "deepseek-r1-0528",
+      "name": "deepseek-r1",
+      "vendor": "tencent",
+      "maxInputTokens": 96000,
+      "maxOutputTokens": 8192,
+      "supportsReasoning": false
+    },
+    {
+      "id": "deepseek-r1-0528-lkeap",
+      "name": "DeepSeek-R1-0528",
+      "vendor": "f",
+      "maxInputTokens": 96000,
+      "maxOutputTokens": 16000,
+      "supportsReasoning": false
+    },
+    {
+      "id": "deepseek-v3-0324",
+      "name": "deepseek-v3",
+      "vendor": "tencent",
+      "maxInputTokens": 96000,
+      "maxOutputTokens": 8192,
+      "supportsReasoning": false
+    },
+    {
+      "id": "deepseek-v3-0324-lkeap",
+      "name": "DeepSeek-V3-0324",
+      "vendor": "f",
+      "maxInputTokens": 112000,
+      "maxOutputTokens": 16000,
+      "supportsReasoning": false
+    },
+    {
+      "id": "deepseek-v3-0324-taco-completion",
+      "name": "deepseek-v3-0324",
+      "vendor": "tencent",
+      "maxOutputTokens": 256,
+      "supportsReasoning": false
+    },
+    {
+      "id": "deepseek-v3-1",
+      "name": "DeepSeek-V3.1",
+      "vendor": "f",
+      "maxInputTokens": 96000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": false,
+      "credits": 0.52
+    },
+    {
+      "id": "deepseek-v3-1-lkeap",
+      "name": "DeepSeek-V3-1",
+      "vendor": "f",
+      "maxInputTokens": 96000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": false,
+      "credits": 0.52
+    },
+    {
+      "id": "deepseek-v3-1-volc",
+      "name": "DeepSeek-V3-1-Terminus",
+      "vendor": "f",
+      "maxInputTokens": 96000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": false,
+      "credits": 0.52
+    },
+    {
+      "id": "deepseek-v3-2-volc",
+      "name": "DeepSeek-V3.2",
+      "vendor": "f",
+      "maxInputTokens": 96000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.29
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "name": "Deepseek-V4-Flash",
+      "vendor": "f",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 50000,
+      "supportsReasoning": true,
+      "onlyReasoning": false,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "high",
+        "xhigh"
+      ],
+      "canDisableThinking": true,
+      "credits": 0.17
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "name": "Deepseek-V4-Pro",
+      "vendor": "f",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 50000,
+      "supportsReasoning": true,
+      "onlyReasoning": false,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "high",
+        "xhigh"
+      ],
+      "canDisableThinking": true,
+      "credits": 0.51
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "name": "Deepseek-V4.1-Flash",
+      "vendor": "f",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "high"
+      ],
+      "credits": 0.03
+    },
+    {
+      "id": "glm-4.6",
+      "name": "GLM-4.6",
+      "vendor": "f",
+      "maxInputTokens": 168000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": false,
+      "credits": 0.23
+    },
+    {
+      "id": "glm-4.6v",
+      "name": "GLM-4.6V",
+      "vendor": "f",
+      "maxInputTokens": 128000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.11
+    },
+    {
+      "id": "glm-5.0-turbo",
+      "name": "GLM-5.0-Turbo",
+      "vendor": "e",
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 48000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.95
+    },
+    {
+      "id": "glm-5.1",
+      "name": "GLM-5.1",
+      "vendor": "e",
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 48000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.79
+    },
+    {
+      "id": "glm-5.2",
+      "name": "GLM-5.2",
+      "vendor": "e",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 48000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "high",
+        "xhigh"
+      ],
+      "canDisableThinking": true,
+      "credits": 0.79
+    },
+    {
+      "id": "glm-5.3",
+      "name": "GLM-5.3",
+      "vendor": "e",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 48000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "canDisableThinking": true,
+      "credits": 0.79
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM-5.3-Flash",
+      "vendor": "f",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "canDisableThinking": true,
+      "credits": 0.06
+    },
+    {
+      "id": "glm-5v-turbo",
+      "name": "GLM-5v-Turbo",
+      "vendor": "e",
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 64000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.71
+    },
+    {
+      "id": "hunyuan-2.0-instruct",
+      "name": "Hunyuan-2.0-Instruct",
+      "vendor": "j",
+      "maxInputTokens": 128000,
+      "maxOutputTokens": 16000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ]
+    },
+    {
+      "id": "hunyuan-chat",
+      "name": "Hunyuan-Turbos",
+      "vendor": "j",
+      "maxInputTokens": 128000,
+      "maxOutputTokens": 8192,
+      "supportsReasoning": false
+    },
+    {
+      "id": "hy3",
+      "name": "Hy3",
+      "vendor": "j",
+      "maxInputTokens": 192000,
+      "maxOutputTokens": 64000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high"
+      ],
+      "canDisableThinking": false,
+      "credits": 0
+    },
+    {
+      "id": "hy3-x",
+      "name": "Hy3",
+      "vendor": "j",
+      "maxInputTokens": 192000,
+      "maxOutputTokens": 64000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high"
+      ],
+      "canDisableThinking": false,
+      "credits": 0.05
+    },
+    {
+      "id": "hy4-preview",
+      "name": "Hy4 preview",
+      "vendor": "j",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 64000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "high"
+      ],
+      "canDisableThinking": false,
+      "credits": 0.29
+    },
+    {
+      "id": "hy4-preview-x",
+      "name": "Hy4 preview",
+      "vendor": "j",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 64000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "high"
+      ],
+      "canDisableThinking": false,
+      "credits": 0.29
+    },
+    {
+      "id": "kimi-k2-instruct-taiji",
+      "name": "Kimi-K2",
+      "vendor": "f",
+      "maxInputTokens": 31000,
+      "maxOutputTokens": 8192,
+      "supportsReasoning": false
+    },
+    {
+      "id": "kimi-k2-thinking",
+      "name": "Kimi-K2-Thinking",
+      "vendor": "f",
+      "maxInputTokens": 256000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.54
+    },
+    {
+      "id": "kimi-k2.5",
+      "name": "Kimi-K2.5",
+      "vendor": "f",
+      "maxInputTokens": 256000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.45
+    },
+    {
+      "id": "kimi-k2.6",
+      "name": "Kimi-K2.6",
+      "vendor": "f",
+      "maxInputTokens": 256000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.52
+    },
+    {
+      "id": "kimi-k2.7",
+      "name": "Kimi-K2.7-Code",
+      "vendor": "f",
+      "maxInputTokens": 256000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.59
+    },
+    {
+      "id": "kimi-k2.8-preview",
+      "name": "Kimi-K2.8-Preview",
+      "vendor": "f",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "canDisableThinking": true,
+      "credits": 0.77
+    },
+    {
+      "id": "kimi-k3-1",
+      "name": "Kimi-K3",
+      "vendor": "f",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 32000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "high",
+      "supportedEfforts": [
+        "low",
+        "high",
+        "xhigh"
+      ],
+      "canDisableThinking": true,
+      "credits": 1.62
+    },
+    {
+      "id": "minimax-m2.5",
+      "name": "MiniMax-M2.5",
+      "vendor": "f",
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 48000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.18
+    },
+    {
+      "id": "minimax-m2.7",
+      "name": "MiniMax-M2.7",
+      "vendor": "f",
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 48000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.26
+    },
+    {
+      "id": "minimax-m3",
+      "name": "MiniMax-M3",
+      "vendor": "f",
+      "maxInputTokens": 512000,
+      "maxOutputTokens": 128000,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "defaultReasoningEffort": "medium",
+      "supportedEfforts": [
+        "medium"
+      ],
+      "credits": 0.25
+    }
+  ]
+}
