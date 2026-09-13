@@ -1,0 +1,141 @@
+---
+name: verify-cpa-plugin
+description: 验证 cpa-plugins 里的插件是否真能用。改完插件要证明它可用、提交或发布前设门禁、判定某个功能算不算完成、用户反馈装不上或跑不通时使用。给出按改动类型选档的判定表、真机装载与产物安装的驱动与取证方式，以及哪些验证必须交给用户。
+---
+
+# 验证 CPA 插件
+
+单测与编译通过只是必要条件。真实证据是两个东西：**宿主真的装载了这个动态库**，以及**商店真的能装上这个产物**。两者都能离线跑，不需要凭据，也不该问用户。
+
+下文凡是不带前缀的路径都相对本仓根目录；`{pi-codebuddy-provider}/...` 指向另一个仓库。
+
+## 档位与人工边界
+
+从下往上跑，改动跨到哪一档就必须跑到哪一档。低档失败不进入高档。
+
+| 档位 | 需要什么 | 跑什么 | 通过的判据 |
+| :--- | :--- | :--- | :--- |
+| **离线档** | 无 | `go vet`、`go test ./...`、`check-plugins`、构建动态库并查导出符号 | 命令无输出/全过，`nm` 能看到四个导出符号 |
+| **真机档** | 宿主二进制 | `dev-sandbox`，再用 `management-key` 驱动管理面 | 三条断言全过，Doctor 三项符合预期 |
+| **产物档** | 已发布的产物 | `release.go pack`，`verify-registry-install` | 包结构自检通过，每个平台的 SHA256 与动态库格式校验通过 |
+| **凭据档** | **可用账号** | 扫码登录、对话、额度拉取 | 见对应特性文件 |
+
+改动类型 → 最低档位：
+
+- 只改文档、注释 → 离线档的 `check-plugins`。
+- 改 Go 代码（请求构造、解析、流程）→ 离线档 + 真机档。
+- 改 `plugin.json`、`data/*.json`、版本号 → 离线档 + 产物档。
+- 改协议字段（请求头、请求体、登录流程）→ 离线档 + 真机档 + 用抓包会话复跑字段审计。
+
+离线档里的导出符号检查（`nm` 在 macOS 用 `-gU`，Linux 用 `-D`）：
+
+```bash
+cd plugins/workbuddy && CGO_ENABLED=1 go build -buildmode=c-shared -o /tmp/verify/workbuddy.dylib .
+nm -gU /tmp/verify/workbuddy.dylib | grep -c cliproxy   # 期望 4: init / Call / Free / Shutdown
+```
+
+**人工边界。** 离线档、真机档、产物档全部无需用户，自己跑完再说话。凭据档里只有一步不可替代：
+
+1. **手机扫码。** agent 自己就能拿到登录 URL、自己轮询状态、自己确认凭据落盘（见 `features/auth-login.md`），但把那个 URL 变成凭据的动作只能由人完成。做法是把 URL 原样交给用户，等他确认后再轮询，不要自己猜。
+2. **账号可用性的判断。** 账号被风控或限额时，agent 无法从错误码区分"账号问题"还是"插件缺陷"。凭据档出现的错误一律先标注账号状态，不要在账号未验证时定性（教训见 `postmortems/003-unusable-account-verification.md`）。
+3. **真实环境的主观判定。** 用户在自己环境引入后的体验、上游策略变化要不要跟进，属于用户判断，不要代替他下结论。
+
+现有账号一律不可用。凭据档必须等用户现场扫码登录或提供凭据，在此之前只跑前三档。
+
+## Launch
+
+```bash
+# 沙箱: 构建插件 -> 按平台放置 -> 生成配置 -> 启动宿主 -> 三条断言
+go run scripts/dev-sandbox.go -plugin workbuddy -host-src <已 checkout 到该 tag 的 CLIProxyAPI 目录> -timeout 120s
+```
+
+宿主的解析顺序是 `-host <二进制>` > `$CPA_HOST_BIN` > `~/.cache/cpa-plugins/host/v<SDK版本>/cliproxyapi` > `-host-src <源码目录>`（现场构建并落缓存）。源码目录必须先 `git checkout` 到插件 `go.mod` 指定的那个 tag，脚本会核对，不一致直接失败。改动频繁时用 `/tmp/ref/CLIProxyAPI` 这类固定克隆，别反复下载。
+
+沙箱不需要凭据。它会：
+
+- 在 `~/.cache/cpa-plugins/sandbox/<id>/` 起一个宿主，端口默认 `18317`。
+- 每次运行开始时清空该目录，所以上一轮的东西不会串味。
+- 断言三件事：日志出现 `plugin loaded` 与 `plugin registered`；`/v1/models` 覆盖静态清单声明的每一个模型；实现额度能力的插件出现在 `quota/providers`。
+- 打印日志路径与 `pid`。
+
+需要留下宿主动管理面时加 `-keep`，它会保留进程并在结尾打印密钥文件路径。收尾见 Cleanup。
+
+## Doctor
+
+任何异常先跑 Doctor，别急着改代码。三项只读检查：
+
+```bash
+S=~/.cache/cpa-plugins/sandbox/workbuddy
+A="Authorization: Bearer $(cat $S/management-key)"
+curl -s -H "$A" http://127.0.0.1:18317/v0/management/plugins | jq -c '.plugins'
+curl -s -H "$A" http://127.0.0.1:18317/v0/management/auth-files | jq -c '{count: ((.files // [])|length)}'
+curl -s -H "$A" http://127.0.0.1:18317/v0/management/quota/providers | jq -c '.'
+```
+
+预期：`registered`/`enabled` 为 `true`，`supports_oauth`/`supports_quota` 与插件实际能力一致，`metadata.version` 等于 `plugin.json` 的版本；`auth-files` 在沙箱里是空的（沙箱不写凭据）；额度提供方列表包含本插件。
+
+密钥从 `<沙箱>/management-key` 读，不要从 `config.yaml` 读：宿主装载时会把明文密钥 bcrypt 哈希后写回配置，配置里只有哈希，拿它请求一律返回 `invalid management key`。
+
+## Drive
+
+管理面就是驱动面，全部走 `http://127.0.0.1:<port>` 加 `Authorization: Bearer <management-key>`。按特性文件里逐条列出的命令执行，command 与预期结果都在那里，别即兴发挥。
+
+三个入口各自的用途：
+
+- `GET /v0/management/plugins` 看装载与能力声明，最省事的 Doctor。
+- `GET /v0/management/<provider>-auth-url` 发起登录，返回 `{status, url, state}`；`GET /v0/management/get-auth-status?state=<state>` 轮询，返回 `wait` / `ok` / `error`。
+- `POST /v1/chat/completions`、`POST /v0/management/quota/fetch` 是需要凭据的真实链路。
+
+同一端口只能有一个实例。要并行验两个插件就显式换 `-port`，不要双驱同一个宿主。
+
+## Evidence
+
+证据是命令原文加真实输出，不是"应该可以"。三条底线：
+
+- 单测、编译通过、"日志里没报错"都不是生产端证据。生产端证据来自真实宿主进程或真实产物。
+- 用户能看见的行为，就用用户看见的方式证明；不要用只存在于测试里的入口去替代真实入口。
+- 跳过就是跳过。某个入口因为缺前置条件没跑到，直说它没跑到，不要用另一条路的结果冒充。
+
+证据落盘到 `~/.cache/cpa-plugins/evidence/<plugin>/<日期>-<特性>/`，至少包含该轮的 `host.log` 与把管理面响应存下来的文本：
+
+```bash
+D=~/.cache/cpa-plugins/evidence/workbuddy/$(date +%F)-models
+mkdir -p "$D"
+cp ~/.cache/cpa-plugins/sandbox/workbuddy/host.log "$D/host.log"
+```
+
+沙箱目录会在下次运行时被清空，所以要留作证据的东西必须在收尾前拷出来。仓库内不留证据与构建产物。
+
+## Cleanup
+
+- `-keep` 留下的宿主：用运行输出里打印的 `pid` 结束它（`kill <pid>`）。按进程名杀会误伤同名的其他实例。
+- 起过登录会话就用 `DELETE /v0/management/oauth-session?state=<state>` 取消，否则它会一直挂在宿主的会话表里。
+- 清理删实例与临时状态，不删证据。清理完确认证据还在。
+- 失败的那一轮也要收尾，否则端口和进程会留到下一轮，把下一个断言变成假阳性。
+
+## Helpers
+
+仓库里的这四个脚本就是本 skill 的手。不要绕过它们手搓同样的动作。
+
+| 命令 | 作用 |
+| :--- | :--- |
+| `go run scripts/check-plugins.go [-release-ready] [-strict]` | 仓库不变量：清单同步、id 与目录名一致、声明平台在 CI 矩阵内、哈希已回填、URL 末段等于宿主期望的资产名。`-release-ready` 作发布门禁 |
+| `go run scripts/dev-sandbox.go -plugin <id> [...]` | 构建、装载、注册、模型清单、额度声明的真机断言 |
+| `go run scripts/release.go pack --plugin <id> [--version <v>] [--out dist]` | 本地打包并按宿主规则自检包结构，输出 sha256。`record --plugin <id>` 用真实产物哈希回填清单 |
+| `go run scripts/verify-registry-install.go [-local] -plugin <a,b>` | 拉清单、下载发布产物、校验 SHA256 与动态库格式（linux 认 ELF，darwin 认 Mach-O） |
+
+协议字段的证据链在另一个仓库：`{pi-codebuddy-provider}/scripts/audit-traffic-diff.ts --session <文件名片段>`，比对插件实际发送的字段与抓包。抓包版本必须与本机客户端版本一致，否则结论无效。
+
+## 特性地图
+
+先读 `features/README.md` 的基线与驱动约定，再进对应特性文件。每条特性都列了用户视角的入口、逐条命令与可观测结果。
+
+- `features/models.md` 模型清单与过滤
+- `features/auth-login.md` 扫码登录与凭据归属
+- `features/chat.md` 对话（流式与非流式）
+- `features/quota.md` 额度声明与拉取
+- `features/release-install.md` 打包、清单与安装态
+
+`echo-probe` 是冒烟用的探针插件，走同一套档位，没有独立的特性文件；它的价值是证明"这条流水线本身通"。
+
+地图会随客户端与宿主漂移。发现入口过时就跑 `/maintain-verification-skill` 更新，不要让它烂在原地。
