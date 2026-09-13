@@ -43,3 +43,7 @@ _Avoid_: Header set, user agent mode, spoof level
 **Login Profile**:
 The client persona a plugin impersonates when performing the OAuth handshake, selected independently of the request header identity.
 _Avoid_: Auth mode, login type, credential source
+
+**Manifest Provenance**:
+溯源字段，标记静态清单由哪次真实客户端抓包生成、何时生成的，供校验清单未被手改。
+_Avoid_: manifest metadata, capture stamp
