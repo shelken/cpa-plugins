@@ -6,3 +6,4 @@
 - [004 · 变更集 bump 语义与目标版本号冲突](./004-changeset-bump-semantics-vs-target-version.md)
 - [005 · verify-chat 按带前缀模型 id 查清单 miss](./005-verify-chat-manifest-lookup-prefix-miss.md)
 - [006 · 注释声明被测试钉死成错误形状](./006-quota-comment-vs-capture-drift.md)
+- [007 · 验证信号与写入点分离诱发空提交事故](./007-quota-release-badge-vs-target-state.md)
