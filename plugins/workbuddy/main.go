@@ -315,7 +315,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			SchemaVersion: pluginabi.SchemaVersion,
 			Metadata: pluginapi.Metadata{
 				Name:             "WorkBuddy",
-				Version:          "0.1.3",
+				Version:          "0.1.4",
 				Author:           "shelken",
 				GitHubRepository: "https://github.com/shelken/cpa-plugins",
 				ConfigFields: []pluginapi.ConfigField{
@@ -330,6 +330,16 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 						Type:        pluginapi.ConfigFieldTypeEnum,
 						EnumValues:  []string{string(ProfileDesktop), string(ProfileCLI)},
 						Description: "扫码登录走哪个平台: desktop 用 workbuddy 平台, cli 用 cli 平台。默认 desktop。",
+					},
+					{
+						Name:        "enable-model-prefix",
+						Type:        pluginapi.ConfigFieldTypeBoolean,
+						Description: "注册模型 id 是否带前缀。默认 true。",
+					},
+					{
+						Name:        "model-prefix",
+						Type:        pluginapi.ConfigFieldTypeString,
+						Description: "模型 id 前缀, 默认 workbuddy, 仅 enable-model-prefix 为 true 时生效。",
 					},
 				},
 			},
@@ -411,7 +421,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		models := filterAndMapModels(m.Models)
+		models := filterAndMapModels(getConfig(), m.Models)
 		return okEnvelope(pluginapi.ModelResponse{
 			Provider: "workbuddy",
 			Models:   models,

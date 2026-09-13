@@ -25,7 +25,7 @@ plugins:
 
 启用后在管理面板触发一次登录，插件会返回官方登录地址，用手机扫码确认即可。凭据写入宿主 `auth-dir`，后续对话与额度查询都由宿主按凭据调度。
 
-模型以 `workbuddy` 渠道下的官方模型 id 直接可选，无需额外配置。
+模型以 `workbuddy/` 前缀加官方模型 id 的形态注册，例如 `workbuddy/hy3`，保证 id 全局唯一、不与其他渠道的目录冲突。
 
 ## 配置项
 
@@ -35,6 +35,8 @@ plugins:
 | `priority` | integer | `0` | 插件在宿主中的调用优先级 |
 | `identity-profile` | string | `desktop` | 请求头身份档，可选 `desktop` 或 `cli` |
 | `login-profile` | string | `desktop` | 登录流程档，可选 `desktop` 或 `cli` |
+| `enable-model-prefix` | boolean | `true` | 注册模型 id 是否带前缀 |
+| `model-prefix` | string | `workbuddy` | 模型 id 前缀，仅 `enable-model-prefix` 为 `true` 时生效 |
 
 两个档位互相独立。身份档决定请求头怎么写，登录档决定凭据怎么拿，允许混搭。改动后需重启宿主生效。
 

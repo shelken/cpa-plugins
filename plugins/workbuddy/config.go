@@ -15,11 +15,15 @@ const (
 )
 
 type PluginConfig struct {
-	Enabled         bool   `yaml:"enabled"`
-	Priority        int    `yaml:"priority"`
-	IdentityProfile string `yaml:"identity-profile"`
-	LoginProfile    string `yaml:"login-profile"`
+	Enabled           bool   `yaml:"enabled"`
+	Priority          int    `yaml:"priority"`
+	IdentityProfile   string `yaml:"identity-profile"`
+	LoginProfile      string `yaml:"login-profile"`
+	EnableModelPrefix *bool  `yaml:"enable-model-prefix"`
+	ModelPrefix       string `yaml:"model-prefix"`
 }
+
+const DefaultModelPrefix = "workbuddy"
 
 func parseConfig(yamlBytes []byte) (*PluginConfig, error) {
 	cfg := &PluginConfig{
@@ -48,5 +52,33 @@ func parseConfig(yamlBytes []byte) (*PluginConfig, error) {
 		return nil, fmt.Errorf("invalid login-profile %q, must be %q or %q", cfg.LoginProfile, ProfileDesktop, ProfileCLI)
 	}
 
+	cfg.ModelPrefix = strings.TrimSpace(cfg.ModelPrefix)
+
 	return cfg, nil
+}
+
+// modelPrefix 返回带斜杠的前缀, 关闭时返回空串。nil 视为开启, 与文档描述的默认行为一致。
+func (c *PluginConfig) modelPrefix() string {
+	if c.EnableModelPrefix != nil && !*c.EnableModelPrefix {
+		return ""
+	}
+	prefix := c.ModelPrefix
+	if prefix == "" {
+		prefix = DefaultModelPrefix
+	}
+	return prefix + "/"
+}
+
+// registeredModelID 注册侧: 给模型 id 加前缀。
+func registeredModelID(cfg *PluginConfig, id string) string {
+	return cfg.modelPrefix() + id
+}
+
+// manifestModelID 执行侧: 剥掉注册时加的前缀, 不匹配则原样返回。
+func manifestModelID(cfg *PluginConfig, modelID string) string {
+	if p := cfg.modelPrefix(); p != "" {
+		stripped, _ := strings.CutPrefix(modelID, p)
+		return stripped
+	}
+	return modelID
 }

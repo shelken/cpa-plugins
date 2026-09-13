@@ -4,6 +4,15 @@ import (
 	"testing"
 )
 
+func mustParseConfig(t *testing.T, yamlBytes []byte) *PluginConfig {
+	t.Helper()
+	cfg, err := parseConfig(yamlBytes)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	return cfg
+}
+
 func TestParseConfigDefaults(t *testing.T) {
 	cfg, err := parseConfig(nil)
 	if err != nil {
@@ -17,6 +26,9 @@ func TestParseConfigDefaults(t *testing.T) {
 	}
 	if cfg.LoginProfile != string(ProfileDesktop) {
 		t.Errorf("expected LoginProfile desktop, got %s", cfg.LoginProfile)
+	}
+	if cfg.modelPrefix() != "workbuddy/" {
+		t.Errorf("expected modelPrefix workbuddy/, got %q", cfg.modelPrefix())
 	}
 }
 
@@ -49,5 +61,30 @@ identity-profile: invalid
 	_, err := parseConfig(yamlData)
 	if err == nil {
 		t.Fatal("expected error for invalid profile, got nil")
+	}
+}
+
+func TestModelPrefixDisabled(t *testing.T) {
+	yamlData := []byte("enable-model-prefix: false\n")
+	cfg, err := parseConfig(yamlData)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := registeredModelID(cfg, "hy3"); got != "hy3" {
+		t.Errorf("expected bare id hy3 when prefix disabled, got %q", got)
+	}
+}
+
+func TestModelPrefixCustom(t *testing.T) {
+	yamlData := []byte("model-prefix: custom\n")
+	cfg, err := parseConfig(yamlData)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := registeredModelID(cfg, "hy3"); got != "custom/hy3" {
+		t.Errorf("expected custom/hy3, got %q", got)
+	}
+	if got := manifestModelID(cfg, "custom/hy3"); got != "hy3" {
+		t.Errorf("expected stripped id hy3, got %q", got)
 	}
 }

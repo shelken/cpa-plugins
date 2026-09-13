@@ -199,13 +199,15 @@ func findModelConfig(manifest *ManifestV2, modelID string) *ManifestModel {
 	return nil
 }
 
-func prepareChatRequestBody(reqPayload []byte, manifest *ManifestV2, profile *ProfileConfig, isStream bool) ([]byte, error) {
+func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *ManifestV2, profile *ProfileConfig, isStream bool) ([]byte, error) {
 	var inReq chatCompletionRequest
 	if err := json.Unmarshal(reqPayload, &inReq); err != nil {
 		return nil, fmt.Errorf("unmarshal chat completions request: %w", err)
 	}
 
-	modelDef := findModelConfig(manifest, inReq.Model)
+	// 宿主看到的是带前缀的注册 id, 上游只认裸 id, 这里在协议保真的边界上剥掉。
+	modelID := manifestModelID(cfg, inReq.Model)
+	modelDef := findModelConfig(manifest, modelID)
 	supportsImages := true
 	supportsReasoning := true
 	defaultEffort := "high"
@@ -220,7 +222,7 @@ func prepareChatRequestBody(reqPayload []byte, manifest *ManifestV2, profile *Pr
 	inReq.Messages = cleanMessages(inReq.Messages, supportsImages, manifest)
 
 	outMap := make(map[string]any)
-	outMap["model"] = inReq.Model
+	outMap["model"] = modelID
 	outMap["messages"] = inReq.Messages
 	outMap["stream"] = isStream
 	if isStream {
@@ -399,7 +401,7 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 		payload = req.OriginalRequest
 	}
 
-	bodyBytes, err := prepareChatRequestBody(payload, manifest, profile, true)
+	bodyBytes, err := prepareChatRequestBody(cfg, payload, manifest, profile, true)
 	if err != nil {
 		return nil, fmt.Errorf("prepare stream chat body: %w", err)
 	}
@@ -497,7 +499,7 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 
 	// 上游只接受流式对话, 发 stream:false 会被拒 (400/11101) 并把凭据打成不可用,
 	// 因此这里始终按流式请求上游, 在插件内聚合成单条完整响应再交给宿主。
-	bodyBytes, err := prepareChatRequestBody(payload, manifest, profile, true)
+	bodyBytes, err := prepareChatRequestBody(cfg, payload, manifest, profile, true)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("prepare non-stream chat body: %w", err)
 	}

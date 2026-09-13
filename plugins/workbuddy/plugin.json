@@ -8,23 +8,23 @@
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "bd150fda78b460c790826c58a9539d974530e5c69d31d6a8632165e8660a320f",
-        "size": 2733000,
-        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.3/workbuddy_0.1.3_darwin_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.4/workbuddy_0.1.4_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "dbf448c0210a4409577ecd9985ac158b5fe846335d01a849b827f039f769377b",
-        "size": 5375557,
-        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.3/workbuddy_0.1.3_linux_amd64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.4/workbuddy_0.1.4_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "009bc0e1bb540dabbc752eab108fb64c6ad87fac724d1d55be1248922c96a3ef",
-        "size": 4867178,
-        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.3/workbuddy_0.1.3_linux_arm64.zip"
+        "sha256": "",
+        "size": 0,
+        "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.4/workbuddy_0.1.4_linux_arm64.zip"
       }
     ],
     "type": "direct"
@@ -39,5 +39,5 @@
     "codebuddy",
     "tencent"
   ],
-  "version": "0.1.3"
+  "version": "0.1.4"
 }

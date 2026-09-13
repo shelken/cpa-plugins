@@ -279,7 +279,7 @@ func TestPrepareChatRequestBodyProfileDifferences(t *testing.T) {
 	}`)
 
 	desktopProf := manifest.Profiles["desktop"]
-	desktopBody, err := prepareChatRequestBody(reqPayload, manifest, &desktopProf, true)
+	desktopBody, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &desktopProf, true)
 	if err != nil {
 		t.Fatalf("desktop prepare failed: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestPrepareChatRequestBodyProfileDifferences(t *testing.T) {
 	}
 
 	cliProf := manifest.Profiles["cli"]
-	cliBody, err := prepareChatRequestBody(reqPayload, manifest, &cliProf, true)
+	cliBody, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &cliProf, true)
 	if err != nil {
 		t.Fatalf("cli prepare failed: %v", err)
 	}
@@ -329,6 +329,34 @@ func TestSSEPayloadStripsFramingPrefix(t *testing.T) {
 	}
 	if _, ok := ssePayload(": keep-alive"); ok {
 		t.Error("非 data 行不应下发")
+	}
+}
+
+func TestPrepareChatRequestBodyStripsModelPrefix(t *testing.T) {
+	manifest := &ManifestV2{
+		Endpoints: EndpointsConfig{BaseURL: "https://copilot.tencent.com"},
+		Profiles: map[string]ProfileConfig{
+			"desktop": {},
+		},
+		Models: []ManifestModel{
+			{ID: "hy3", SupportsReasoning: true, DefaultReasoningEffort: "medium"},
+		},
+	}
+	reqPayload := []byte(`{"model": "workbuddy/hy3", "messages": [{"role": "user", "content": "hi"}]}`)
+
+	body, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &ProfileConfig{}, true)
+	if err != nil {
+		t.Fatalf("prepare failed: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if out["model"] != "hy3" {
+		t.Errorf("expected upstream model hy3, got %v", out["model"])
+	}
+	if out["reasoning_effort"] != "medium" {
+		t.Errorf("expected reasoning_effort medium from manifest default, got %v", out["reasoning_effort"])
 	}
 }
 

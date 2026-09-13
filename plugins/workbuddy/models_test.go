@@ -66,14 +66,14 @@ func TestFilterAndMapModels(t *testing.T) {
 		},
 	}
 
-	models := filterAndMapModels(manifestModels)
+	models := filterAndMapModels(mustParseConfig(t, nil), manifestModels)
 	if len(models) != 1 {
 		t.Fatalf("expected 1 model after filtering, got %d", len(models))
 	}
 
 	m := models[0]
-	if m.ID != "deepseek-v4-pro" {
-		t.Errorf("expected model id deepseek-v4-pro, got %s", m.ID)
+	if m.ID != "workbuddy/deepseek-v4-pro" {
+		t.Errorf("expected prefixed model id workbuddy/deepseek-v4-pro, got %s", m.ID)
 	}
 	if m.Thinking == nil {
 		t.Fatal("expected thinking support, got nil")
@@ -83,5 +83,16 @@ func TestFilterAndMapModels(t *testing.T) {
 	}
 	if len(m.SupportedInputModalities) != 2 {
 		t.Errorf("expected text and image modalities, got %v", m.SupportedInputModalities)
+	}
+}
+
+func TestFilterAndMapModelsPrefixDisabled(t *testing.T) {
+	yamlData := []byte("enable-model-prefix: false\n")
+	models := filterAndMapModels(mustParseConfig(t, yamlData), []ManifestModel{{ID: "deepseek-v4-pro"}})
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if models[0].ID != "deepseek-v4-pro" {
+		t.Errorf("expected bare id deepseek-v4-pro, got %s", models[0].ID)
 	}
 }

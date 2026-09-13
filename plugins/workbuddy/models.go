@@ -59,7 +59,7 @@ func isModelAllowed(id string) bool {
 	return true
 }
 
-func filterAndMapModels(manifestModels []ManifestModel) []pluginapi.ModelInfo {
+func filterAndMapModels(cfg *PluginConfig, manifestModels []ManifestModel) []pluginapi.ModelInfo {
 	models := make([]pluginapi.ModelInfo, 0, len(manifestModels))
 	for _, m := range manifestModels {
 		if !isModelAllowed(m.ID) {
@@ -105,7 +105,7 @@ func filterAndMapModels(manifestModels []ManifestModel) []pluginapi.ModelInfo {
 		}
 
 		models = append(models, pluginapi.ModelInfo{
-			ID:                         m.ID,
+			ID:                         registeredModelID(cfg, m.ID),
 			Object:                     "model",
 			Name:                       name,
 			DisplayName:                displayName,
