@@ -10,7 +10,7 @@
 
 ## 工作流分发
 
-- **跨平台目标**：仅编译 `linux/amd64` 与 `linux/arm64` 架构动态库，降低构建与维护成本。
+- **跨平台目标**：构建 `linux/amd64`、`linux/arm64`、`darwin/arm64` 三个平台。c-shared 是 CGO 构建，无法交叉编译，每个平台必须用对应的原生运行器构建。
 - **独立生命周期**：推送 `<plugin-id>/v<version>` 标签（如 `echo-probe/v0.1.0`）仅构建对应插件并发布 Release。
 
 ## 核心脚本
@@ -43,6 +43,54 @@ go run scripts/verify-registry-install.go -local echo-probe
 
 # 严禁不带参数运行（脚本会直接拒绝并报错退出，防止全量无谓下载）
 ```
+
+### 3. 本地沙箱 (`scripts/dev-sandbox.go`)
+
+一条命令完成「编译插件 → 生成沙箱配置 → 启动宿主 → 断言装载与注册」，不需要真实凭据：
+
+```bash
+go run scripts/dev-sandbox.go --plugin workbuddy --host /path/to/cliproxyapi
+
+# 不指定 --host 时依次尝试 $CPA_HOST_BIN、~/.cache/cpa-plugins/host/v<SDK版本>/cliproxyapi
+# 也可以用 --host-src 指向 CLIProxyAPI 源码目录现场构建（要求签出到插件所需的版本）
+# --keep 保留宿主机进程与沙箱目录，便于继续手工调试
+```
+
+断言三件事：宿主日志出现 `plugin loaded` 与 `plugin registered`；`/v1/models` 覆盖插件静态清单（`plugins/<id>/data/static-config.json`）声明的全部模型；实现额度能力的插件出现在 `quota/providers` 列表中。
+
+### 4. 发布工具 (`scripts/release.go`)
+
+```bash
+# 本地打包当前平台，产物按宿主契约命名并自检，输出 sha256
+go run scripts/release.go pack --plugin workbuddy --out dist
+
+# 用真实发布产物回填 plugin.json 的 sha256，并重建 registry.json
+go run scripts/release.go record --plugin workbuddy --dist dist
+```
+
+`pack` 的产物只有在确实被上传发布时才能用于回填哈希，否则安装时会报 `checksum mismatch`。同样只支持当前平台。
+
+### 5. 仓库不变量检查 (`scripts/check-plugins.go`)
+
+```bash
+go run scripts/check-plugins.go                  # 常规检查
+go run scripts/check-plugins.go --strict         # 警告也视为失败
+go run scripts/check-plugins.go --release-ready  # 发布门禁：未回填哈希即失败
+```
+
+检查项：`registry.json` 与插件清单同步；`plugin.json` 的 id 与目录名一致；声明的平台都存在于发布工作流的构建矩阵；产物 URL 末段等于宿主期望的资产名；`sha256` 已回填且为 64 位十六进制；每个插件都有 `README.md`；各插件所钉宿主 SDK 版本与 go 指令是否一致。
+
+## 发布流程
+
+```bash
+go run scripts/check-plugins.go --release-ready                    # 1. 发布门禁
+git tag workbuddy/v0.1.0 && git push origin workbuddy/v0.1.0       # 2. 触发 CI 构建并发布
+gh release download workbuddy/v0.1.0 --pattern '*.zip' --dir dist  # 3. 取回真实产物
+go run scripts/release.go record --plugin workbuddy --dist dist    # 4. 回填哈希并重建清单
+git add plugins/workbuddy/plugin.json registry.json && git commit  # 5. 提交
+```
+
+第 3、4 步不可省。宿主对 `sha256` 是必填项，缺失时报 `artifact checksum missing`，而哈希只能由真实产物得出。
 
 ## 在 CLIProxyAPI (home-ops) 中订阅
 
