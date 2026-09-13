@@ -19,10 +19,10 @@
 
 Preconditions:
 
-- 沙箱以 `-keep` 启动，`A="Authorization: Bearer $(cat ~/.cache/cpa-plugins/sandbox/workbuddy/management-key)"`。
+- 沙箱以 `-keep` 启动。沙箱不配 `api-keys`，`/v1` 不带任何头即可；真实部署上 `/v1` 要客户端 API key，管理密钥不能替代。
 - `auth-files` 里有可用凭据。**没有可用凭据时本特性停在未跑到，不要用假凭据试。**
 
-- **流式。** `curl -N -s -H "$A" -H 'Content-Type: application/json' -d '{"model":"hy3","messages":[{"role":"user","content":"你好"}],"stream":true}' http://127.0.0.1:18317/v1/chat/completions`。输出是逐帧到达的 SSE，能看到多个 `data:` 增量而不是一次性返回，最后一帧是 `[DONE]`。
+- **流式。** `curl -N -s -H 'Content-Type: application/json' -d '{"model":"hy3","messages":[{"role":"user","content":"你好"}],"stream":true}' http://127.0.0.1:18317/v1/chat/completions`。输出是逐帧到达的 SSE，能看到多个 `data:` 增量而不是一次性返回，最后一帧是 `[DONE]`。
 - **非流式。** 同上去掉 `"stream":true`。返回单条完整 JSON。上游本身不支持非流式（`11101`），因此这条要么由插件内部聚合 SSE 后返回，要么明确失败；两种情况都要在证据里写清是哪一种。
 - **请求保真。** 改过请求头或请求体后，在 `{pi-codebuddy-provider}` 里跑 `bun run scripts/audit-traffic-diff.ts --session WorkBuddy_20260913_171327.json`，聊天接口不应有 `Missing` 项。抓包版本必须与本机客户端版本一致。
 - **构造层兜底。** `cd plugins/workbuddy && go test ./...`，`TestBuildChatHeadersMatchDesktopClient` 钉住头部集合、id 同值关系与格式。单测不算生产端证据，但它能在真机跑之前挡住构造回归。

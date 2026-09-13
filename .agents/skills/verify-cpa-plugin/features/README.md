@@ -13,8 +13,8 @@
 ## 驱动约定
 
 - 每条命令都当作字面量执行，路径、id、state 原样传递。
-- 命令全部以 `cd <插件仓>` 为起点，HTTP 请求打到沙箱宿主。
-- 管理面统一带 `Authorization: Bearer $(cat <沙箱>/management-key)`。
+- 命令全部以 `cd <插件仓>` 为起点，管理面请求用 `go run scripts/management-api.go -sandbox <id> -path <管理面路径>` 打到沙箱宿主，密钥由脚本读。
+- 沙箱不配 `api-keys`，所以沙箱里的 `/v1/models`、`/v1/chat/completions` 不带任何头即可；真实部署上 `/v1` 要客户端 API key，与管理密钥不是一回事。
 - 每条断言都由"命令 + 预期可观测结果"成对给出。结果不符就是没通过，不要换个说法让它通过。
 - 只管自己启动的实例；端口只有一个，别并行驱动同一宿主。
 

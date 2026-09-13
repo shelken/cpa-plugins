@@ -21,14 +21,14 @@
 Preconditions:
 
 - 沙箱以 `-keep` 启动，宿主在 `127.0.0.1:18317`。
-- `A="Authorization: Bearer $(cat ~/.cache/cpa-plugins/sandbox/workbuddy/management-key)"`。
+- 管理面命令一律写成 `go run scripts/management-api.go -sandbox workbuddy -path <路径>`，密钥由脚本从 `<沙箱>/management-key` 读。
 - 凭据档需要可用账号。现有账号不可用，这一步必须由用户现场扫码。
 
-- **拿到登录地址。** 跑 `curl -s -H "$A" http://127.0.0.1:18317/v0/management/workbuddy-auth-url`。返回 `{"status":"ok","url":"https://www.workbuddy.cn/login?...","state":"<36 字符>"}`。这一步 agent 可以独立完成，`url` 就是交给用户的东西。
+- **拿到登录地址。** 跑 `go run scripts/management-api.go -sandbox workbuddy -path /v0/management/workbuddy-auth-url`。返回 `{"status":"ok","url":"https://www.workbuddy.cn/login?...","state":"<36 字符>"}`。这一步 agent 可以独立完成，`url` 就是交给用户的东西。
 - **交给人。** 把 `url` 原样发给用户扫码。不要打印 `state` 之外的会话细节，也不要把 URL 当成凭据存进仓库。
-- **轮询。** 用户确认前后都可用 `curl -s -H "$A" "http://127.0.0.1:18317/v0/management/get-auth-status?state=<state>"`。未扫码时返回 `{"status":"wait"}`；异常时返回 `{"status":"error","error":"..."}`；完成后返回 `{"status":"ok"}`。
-- **确认凭据落盘。** `curl -s -H "$A" http://127.0.0.1:18317/v0/management/auth-files | jq -c '.files[] | {name, provider, quota_provider, account_type}'`。出现新凭据且三个归属字段符合预期才算登录链路通过。具体账号字段不要写进证据。
-- **取消悬挂会话。** `curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$A" "http://127.0.0.1:18317/v0/management/oauth-session?state=<state>"` 返回 `200`，随后同一 state 轮询应变成 `unknown or expired state`。
+- **轮询。** 用户确认前后都可用 `go run scripts/management-api.go -sandbox workbuddy -path '/v0/management/get-auth-status?state=<state>'`。未扫码时返回 `{"status":"wait"}`；异常时返回 `{"status":"error","error":"..."}`；完成后返回 `{"status":"ok"}`。
+- **确认凭据落盘。** `go run scripts/management-api.go -sandbox workbuddy -path /v0/management/auth-files | jq -c '.files[] | {name, provider, quota_provider, account_type}'`。出现新凭据且三个归属字段符合预期才算登录链路通过。具体账号字段不要写进证据。
+- **取消悬挂会话。** `go run scripts/management-api.go -sandbox workbuddy -method DELETE -path '/v0/management/oauth-session?state=<state>'`，看 stderr 的 `[res] HTTP 200`，随后同一 state 轮询应变成 `unknown or expired state`。
 - **离线归属判定。** 不联网也能验 `auth.parse`：自造一个同结构的凭据文件放进 `auth-dir`（字段形状见实现简报第六节），重启宿主后看 `auth-files` 的归属字段。不要拿真实账号文件做这件事。
 
 ## Gotchas

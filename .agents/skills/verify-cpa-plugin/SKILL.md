@@ -75,34 +75,34 @@ go run scripts/dev-sandbox.go -plugin workbuddy -host-src <已 checkout 到该 t
 
 沙箱之外的宿主（用户自己部署的那台）是唯一能证明"真能用"的地方。它同时是别人的生产环境，按只读对待。
 
-**先确认可达性与目标，再动手。** 401 表示网络通、只差密钥；超时才是网络不通。两者要分开说，别混成一句"连不上"。本机走了代理时加 `--noproxy '*'`，否则内网地址会被代理吃掉：
+**先确认可达性与目标，再动手。** 401 表示网络通、只差密钥；超时才是网络不通。两者要分开说，别混成一句"连不上"。
+
+**版本从响应头读，不从部署仓库推断。** 每次管理面响应都带 `X-CPA-VERSION`、`X-CPA-COMMIT`、`X-CPA-BUILD-DATE`、`X-CPA-SUPPORT-PLUGIN`，它们在鉴权之前写入，所以密钥不对时也拿得到。仓库里的镜像 tag 与 Pod 实际运行的版本可能不一致。
+
+**鉴权统一走 `scripts/management-api.go`，不要手搓 curl。** 密钥来源、请求头形式、宿主版本头、被拒时的处置建议都由它封装；响应体走 stdout，诊断行走 stderr，所以可以直接接 `jq`：
 
 ```bash
-BASE=http://<host>:8317
-curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}\n' "$BASE/v0/management/plugins"
+# 沙箱: 地址与密钥都从沙箱目录取
+go run scripts/management-api.go -sandbox workbuddy -path /v0/management/plugins | jq -c '.plugins[]'
+
+# 生产实例: 密钥来源三选一
+go run scripts/management-api.go -base http://<host>:8317 -key-cmd 'sec-run printenv <变量名>' -path /v0/management/auth-files
+go run scripts/management-api.go -base http://<host>:8317 -key-name home-ops -path /v0/management/auth-files
+go run scripts/management-api.go -base http://<host>:8317 -key-file ~/.cache/cpa-plugins/keys/home-ops -path /v0/management/auth-files
+
+# 没有任何密钥来源时它也发一次请求, 专门用来读宿主自报的版本头
+go run scripts/management-api.go -base http://<host>:8317
 ```
 
-版本、插件清单、能力声明一律从管理面读，不要从部署仓库里推断：仓库里的镜像 tag 与 Pod 实际运行的版本可能不一致。
+密钥来源优先级 `-key-file` > `-key-name`（读 `~/.cache/cpa-plugins/keys/<名字>`）> `-key-cmd` > `-key-env` > 沙箱目录。密钥只留在进程内，不进对话、不进证据、不进 shell 历史。取不到、或值不被接受，就停下来问用户，不要改试别的凭据。用户已在浏览器登录管理面时还有最后一个来源：用 CDP 把页面里的值**重定向进密钥文件**，不打印。
 
-**密钥只走文件，不进命令回显。** 按优先级取一个：
+**放法用原值，不加 `Bearer`。** 宿主两种都收，`Authorization: <key>` 原值或 `X-Management-Key: <key>`，脚本默认第一种，要换用 `-auth x-management-key`。前缀不是决定项：宿主会先剥 `Bearer ` 再比，所以同一个值两种写法等价；但去掉前缀能少一层"是不是头写错了"的自我怀疑，排查时只留一个变量。
 
-1. 环境里有 `sec-run` 这类取密工具时，直接 `K=$(sec-run printenv <变量名>)`，值只留在变量里。取值失败、或值不被目标接受，就停下来问用户，不要改试别的凭据。
-2. 否则请用户把密钥写进 `~/.cache/cpa-plugins/keys/<名字>`（权限 600）。之后全程只写 `$(cat …)`，不 `echo`、不 `sed`、不落日志。
-3. 用户已在浏览器登录管理面时，用 CDP 从页面里取，**直接重定向进同一个文件，不打印**。
-4. 都不行就请用户自己在页面里完成需要鉴权的动作，agent 只读页面呈现的结果。
+**别在同一把密钥上连试。** 宿主对连续失败尝试按 IP 封禁，实测 5 次失败锁 30 分钟。`invalid management key` 只说明这把值不属于该实例，重试改变不了结论，只会把后面的判断窗口一起封掉。被拒就换来源，或者停下来问人。
 
-被拒时先分清是值错还是头错：同一个 `Authorization: Bearer` 头在本机沙箱可用、在目标返回 `invalid management key`，那是值不属于该实例，不是头写错了。
+**默认直连。** 脚本不读环境里的 `HTTP_PROXY` / `HTTPS_PROXY`，内网地址被代理吃掉会表现为超时或错误页面；确需代理时用 `-proxy <url>` 显式打开。
 
-**每条命令自己取一次密钥。** 工具调用之间不共享 shell 变量，上一轮定义的 `$K` 在下一轮就是空的。空令牌换来的 401 长得像"密钥错"，实际是你根本没把它带上，照着这个假象去换密钥会一路查到天亮。取值只写在同一条命令的开头，或落到文件里每轮 `$(cat …)` 读一次；下判断前先打印长度确认非空，不要用 401 反推密钥对不对。
-
-```bash
-K=$(sec-run printenv <变量名>)   # 或 K=$(cat ~/.cache/cpa-plugins/keys/<名字>)
-# 取值与下面的请求必须在同一次调用里，中间断一轮 $K 就没了
-curl -s --noproxy '*' -H "Authorization: Bearer $K" "$BASE/v0/management/plugins" \
-  | jq -c '.plugins[]|{id,registered,enabled,effective_enabled,supports_quota,version:.metadata.version}'
-```
-
-命令原文里只有 `$(cat …)`，密钥不进对话、不进证据、不进 shell 历史（前面加空格或改用 `read`）。
+手搓命令时仍要注意：工具调用之间不共享 shell 变量，上一轮定义的 `$K` 在下一轮就是空的，空令牌换来的 401 长得像"密钥错"。下判断前先确认取值非空，不要用 401 反推密钥对不对。
 
 **证据要脱敏。** 落盘前裁掉 `Authorization`、token、邮箱、手机号、完整账号标识、余额绝对值；只留方法、路径、状态码、能力字段、数量与比例。要留整份响应就先过字段裁剪，别整包 `tee`。别开 `set -x`。
 
@@ -115,20 +115,18 @@ curl -s --noproxy '*' -H "Authorization: Bearer $K" "$BASE/v0/management/plugins
 任何异常先跑 Doctor，别急着改代码。三项只读检查：
 
 ```bash
-S=~/.cache/cpa-plugins/sandbox/workbuddy
-A="Authorization: Bearer $(cat $S/management-key)"
-curl -s -H "$A" http://127.0.0.1:18317/v0/management/plugins | jq -c '.plugins'
-curl -s -H "$A" http://127.0.0.1:18317/v0/management/auth-files | jq -c '{count: ((.files // [])|length)}'
-curl -s -H "$A" http://127.0.0.1:18317/v0/management/quota/providers | jq -c '.'
+go run scripts/management-api.go -sandbox workbuddy -path /v0/management/plugins | jq -c '.plugins'
+go run scripts/management-api.go -sandbox workbuddy -path /v0/management/auth-files | jq -c '{count: ((.files // [])|length)}'
+go run scripts/management-api.go -sandbox workbuddy -path /v0/management/quota/providers | jq -c '.'
 ```
 
 预期：`registered`/`enabled` 为 `true`，`supports_oauth`/`supports_quota` 与插件实际能力一致，`metadata.version` 等于 `plugin.json` 的版本；`auth-files` 在沙箱里是空的（沙箱不写凭据）；额度提供方列表包含本插件。
 
-密钥从 `<沙箱>/management-key` 读，不要从 `config.yaml` 读：宿主装载时会把明文密钥 bcrypt 哈希后写回配置，配置里只有哈希，拿它请求一律返回 `invalid management key`。
+密钥由 `-sandbox` 自动从 `<沙箱>/management-key` 读，不要从 `config.yaml` 读：宿主装载时会把明文密钥 bcrypt 哈希后写回配置，配置里只有哈希，拿它请求一律返回 `invalid management key`。
 
 ## Drive
 
-管理面就是驱动面，全部走 `http://127.0.0.1:<port>` 加 `Authorization: Bearer <management-key>`。按特性文件里逐条列出的命令执行，command 与预期结果都在那里，别即兴发挥。
+管理面就是驱动面，统一用 `go run scripts/management-api.go` 驱动：`-sandbox <id>` 连沙箱，`-base <url>` 配 `-key-*` 连别处；写请求用 `-method POST -body '<json>'`。按特性文件里逐条列出的命令执行，command 与预期结果都在那里，别即兴发挥。
 
 三个入口各自的用途：
 
@@ -180,10 +178,11 @@ cp ~/.cache/cpa-plugins/sandbox/workbuddy/host.log "$D/host.log"
 
 ## Helpers
 
-仓库里的这四个脚本就是本 skill 的手。不要绕过它们手搓同样的动作。
+仓库里的这五个脚本就是本 skill 的手。不要绕过它们手搓同样的动作。
 
 | 命令 | 作用 |
 | :--- | :--- |
+| `go run scripts/management-api.go -path <管理面路径> [...]` | 管理面唯一入口：封装沙箱 / 文件 / 名字 / 命令四种密钥来源与请求头形式，默认直连，响应体走 stdout 可直接接 `jq`，版本头与拒绝建议走 stderr |
 | `go run scripts/check-plugins.go [-release-ready] [-strict]` | 仓库不变量：清单同步、id 与目录名一致、声明平台在 CI 矩阵内、哈希已回填、URL 末段等于宿主期望的资产名。`-release-ready` 作发布门禁 |
 | `go run scripts/dev-sandbox.go -plugin <id> [...]` | 构建、装载、注册、模型清单、额度声明的真机断言 |
 | `go run scripts/release.go pack --plugin <id> [--version <v>] [--out dist]` | 本地打包并按宿主规则自检包结构，输出 sha256。`record --plugin <id>` 用真实产物哈希回填清单 |

@@ -22,9 +22,9 @@ Preconditions:
 - `plugins/workbuddy/data/static-config.json` 是当前模型集合的权威来源。
 
 - **清单覆盖。** 跑 `go run scripts/dev-sandbox.go -plugin workbuddy -timeout 120s`。输出出现 `断言通过: /v1/models 返回 N 个模型, 清单声明的 N 个全部在列`。断言方向是"清单声明的必须都在"，插件按自身规则多报不在判据内。
-- **数量对得上。** 起宿主并 `curl -s -H "$A" http://127.0.0.1:18317/v1/models | jq -r '.data[].id' | sort > /tmp/served.txt`，再 `jq -r '.models[].id' plugins/workbuddy/data/static-config.json | sort > /tmp/declared.txt`，`comm -23 /tmp/declared.txt /tmp/served.txt` 必须为空。
+- **数量对得上。** 起宿主并 `curl -s http://127.0.0.1:18317/v1/models | jq -r '.data[].id' | sort > /tmp/served.txt`，再 `jq -r '.models[].id' plugins/workbuddy/data/static-config.json | sort > /tmp/declared.txt`，`comm -23 /tmp/declared.txt /tmp/served.txt` 必须为空。沙箱不配 `api-keys`，所以 `/v1` 不带任何头即可；真实部署上 `/v1` 要客户端 API key，管理密钥不能替代。
 - **黑名单生效。** `grep -c 'hy4-preview-x' /tmp/served.txt` 为 `0`，而 `hy4-preview-f` 在列（用清单里实际存在的一对隐藏/可见模型替换这两个 id）。
-- **推理档位。** `curl -s -H "$A" http://127.0.0.1:18317/v1/models | jq '.data[] | select(.id=="hy3")'` 的档位字段与静态清单里同 id 的条目一致。
+- **推理档位。** `curl -s http://127.0.0.1:18317/v1/models | jq '.data[] | select(.id=="hy3")'` 的档位字段与静态清单里同 id 的条目一致。
 - **零联网。** 沙箱宿主的 `host.log` 在启动段不出现 `/v3/config` 之类的配置拉取；模型报送由 `go:embed` 的清单驱动。
 
 ## Gotchas

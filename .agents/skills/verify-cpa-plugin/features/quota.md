@@ -18,10 +18,10 @@
 
 Preconditions:
 
-- 沙箱已就绪，`A="Authorization: Bearer $(cat ~/.cache/cpa-plugins/sandbox/workbuddy/management-key)"`。
+- 沙箱已就绪，管理面命令用 `go run scripts/management-api.go -sandbox workbuddy -path <路径>`。
 
-- **能力声明（无凭据可跑）。** `curl -s -H "$A" http://127.0.0.1:18317/v0/management/quota/providers | jq -c '.'`。列表里有本插件，`display_name` 与 `supported_providers` 符合预期。沙箱的第三条断言已经在做这件事。
-- **拉取实数（凭据档）。** 先从 `auth-files` 取 `auth_index`，再 `curl -s -H "$A" -H 'Content-Type: application/json' -d '{"auth_index":"<从 auth-files 取>"}' http://127.0.0.1:18317/v0/management/quota/fetch | jq -c '.'`。返回 200，且 `RemainingFraction` 落在 0 到 1 之间。
+- **能力声明（无凭据可跑）。** `go run scripts/management-api.go -sandbox workbuddy -path /v0/management/quota/providers | jq -c '.'`。列表里有本插件，`display_name` 与 `supported_providers` 符合预期。沙箱的第三条断言已经在做这件事。
+- **拉取实数（凭据档）。** 先从 `auth-files` 取 `auth_index`，再 `go run scripts/management-api.go -sandbox workbuddy -method POST -path /v0/management/quota/fetch -body '{"auth_index":"<从 auth-files 取>"}' | jq -c '.'`。返回 200，且 `RemainingFraction` 落在 0 到 1 之间。
 - **字符串形态（离线，优先用这条）。** 服务端会把所有 `*Precise` 后缀字段返回成 JSON 字符串（`"500"`、`"499.35"`），非 Precise 的同名字段是数字，同一接口在不同账号下两种形态都可能出现。构造一份字符串形态的响应作为夹具，断言解析成功且剩余比例正确：`cd plugins/workbuddy && go test ./...` 里的额度用例就是这条夹具。
 - **请求体形状。** 额度请求体五个字段全部用字符串发送，且不发送时间范围过滤。改动后跑 `bun run scripts/audit-traffic-diff.ts --session WorkBuddy_20260913_174259.json`，额度接口不应有 `Missing` 项。
 
