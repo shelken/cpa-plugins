@@ -318,6 +318,20 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 				Version:          "0.1.0",
 				Author:           "shelken",
 				GitHubRepository: "https://github.com/shelken/cpa-plugins",
+				ConfigFields: []pluginapi.ConfigField{
+					{
+						Name:        "identity-profile",
+						Type:        pluginapi.ConfigFieldTypeEnum,
+						EnumValues:  []string{string(ProfileDesktop), string(ProfileCLI)},
+						Description: "上行请求使用的身份档: desktop 与桌面客户端一致, cli 与 CLI 一致。默认 desktop。",
+					},
+					{
+						Name:        "login-profile",
+						Type:        pluginapi.ConfigFieldTypeEnum,
+						EnumValues:  []string{string(ProfileDesktop), string(ProfileCLI)},
+						Description: "扫码登录走哪个平台: desktop 用 workbuddy 平台, cli 用 cli 平台。默认 desktop。",
+					},
+				},
 			},
 			Capabilities: registrationCapability{
 				ModelProvider:         true,
