@@ -41,8 +41,7 @@ go run scripts/verify-registry-install.go echo-probe codexcomp
 # 校验本地尚未提交的 registry.json
 go run scripts/verify-registry-install.go -local echo-probe
 
-# 不带参数时，全量校验清单中的所有插件
-go run scripts/verify-registry-install.go
+# 严禁不带参数运行（脚本会直接拒绝并报错退出，防止全量无谓下载）
 ```
 
 ## 在 CLIProxyAPI (home-ops) 中订阅

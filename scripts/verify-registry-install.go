@@ -73,6 +73,11 @@ func main() {
 			targetPlugins[arg] = true
 		}
 	}
+	if len(targetPlugins) == 0 {
+		fmt.Fprintf(os.Stderr, "错误: 脚本严禁默认下载/验证所有插件。必须明确指定要验证的插件 ID。\n用法: go run scripts/verify-registry-install.go [-local] <plugin-id>\n示例: go run scripts/verify-registry-install.go -local echo-probe\n")
+		os.Exit(1)
+	}
+
 
 	reg, err := loadRegistry(registrySource)
 	if err != nil {
@@ -85,22 +90,18 @@ func main() {
 
 	// Filter plugins to verify
 	var pluginsToVerify []Plugin
-	if len(targetPlugins) > 0 {
-		found := make(map[string]bool)
-		for _, p := range reg.Plugins {
-			if targetPlugins[p.ID] {
-				pluginsToVerify = append(pluginsToVerify, p)
-				found[p.ID] = true
-			}
+	found := make(map[string]bool)
+	for _, p := range reg.Plugins {
+		if targetPlugins[p.ID] {
+			pluginsToVerify = append(pluginsToVerify, p)
+			found[p.ID] = true
 		}
-		for id := range targetPlugins {
-			if !found[id] {
-				fmt.Fprintf(os.Stderr, "FAILED: requested plugin %q not found in registry\n", id)
-				os.Exit(1)
-			}
+	}
+	for id := range targetPlugins {
+		if !found[id] {
+			fmt.Fprintf(os.Stderr, "FAILED: requested plugin %q not found in registry\n", id)
+			os.Exit(1)
 		}
-	} else {
-		pluginsToVerify = reg.Plugins
 	}
 
 	fmt.Printf("Verifying %d plugin(s)...\n\n", len(pluginsToVerify))
