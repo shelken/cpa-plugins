@@ -14,14 +14,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// 字段名与值形态照抄桌面客户端: 全部为字符串, Status 是字符串化的数组。
-// 客户端不发送任何时间范围过滤, 这里也不加, 避免服务端按范围裁剪套餐。
+// 形状照抄 data/static-config.json requestBodies.userResource 抓包 (客户端 5.3.14, generatedAt 2026-09-13)。
+// 字段必须是数字/数组, 不含 OnlyValidPeriod; 发送字符串会让上游 400 (cannot unmarshal string into bool/int)。
 type quotaRequestPayload struct {
-	OnlyValidPeriod string `json:"OnlyValidPeriod"`
-	PageNumber      string `json:"PageNumber"`
-	PageSize        string `json:"PageSize"`
-	ProductCode     string `json:"ProductCode"`
-	Status          string `json:"Status"`
+	PageNumber  int    `json:"PageNumber"`
+	PageSize    int    `json:"PageSize"`
+	ProductCode string `json:"ProductCode"`
+	Status      []int  `json:"Status"`
 }
 
 type flexFloat float64
@@ -116,11 +115,10 @@ func handleQuotaFetch(ctx context.Context, manifest *ManifestV2, cfg *PluginConf
 	}
 
 	quotaReqBody := quotaRequestPayload{
-		OnlyValidPeriod: "True",
-		PageNumber:      "1",
-		PageSize:        "100",
-		ProductCode:     "p_tcaca",
-		Status:          "[0, 3]",
+		PageNumber:  1,
+		PageSize:    100,
+		ProductCode: "p_tcaca",
+		Status:      []int{0, 3},
 	}
 
 	rawBody, err := json.Marshal(quotaReqBody)

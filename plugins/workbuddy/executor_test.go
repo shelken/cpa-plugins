@@ -230,18 +230,18 @@ func TestSessionSeedStableAcrossTurnsWithoutMetadata(t *testing.T) {
 
 func TestQuotaRequestPayloadMatchesDesktopClient(t *testing.T) {
 	raw, err := json.Marshal(quotaRequestPayload{
-		OnlyValidPeriod: "True",
-		PageNumber:      "1",
-		PageSize:        "100",
-		ProductCode:     "p_tcaca",
-		Status:          "[0, 3]",
+		PageNumber:  1,
+		PageSize:    100,
+		ProductCode: "p_tcaca",
+		Status:      []int{0, 3},
 	})
 	if err != nil {
 		t.Fatalf("marshal quota payload: %v", err)
 	}
 
-	// 客户端全部用字符串发送, 且不发送任何时间范围过滤; 加回数字或时间过滤会改变服务端筛选结果。
-	want := `{"OnlyValidPeriod":"True","PageNumber":"1","PageSize":"100","ProductCode":"p_tcaca","Status":"[0, 3]"}`
+	// 形状照抄 data/static-config.json requestBodies.userResource 抓包 (客户端 5.3.14)。
+	// 字段是数字/数组, 不含 OnlyValidPeriod; 上游会把字符串字段反序列化成 bool/int 失败。
+	want := `{"PageNumber":1,"PageSize":100,"ProductCode":"p_tcaca","Status":[0,3]}`
 	if string(raw) != want {
 		t.Errorf("额度请求体形状不符\n实际: %s\n期望: %s", raw, want)
 	}
