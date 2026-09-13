@@ -16,7 +16,7 @@ description: 验证 cpa-plugins 仓库插件与发布产物的可用性。涵盖
 go run scripts/dev-sandbox.go -plugin workbuddy -timeout 120s
 ```
 
-就绪判据为输出包含 `[+] 沙箱验证通过` 以及三项断言通过提示，默认监听端口 `18317`
+就绪判据为输出包含 `[+] 沙箱验证通过` 以及四项断言通过提示，默认监听端口 `18317`
 需要保留宿主进程以便调试时传入 `-keep` 参数，脚本会在退出时输出宿主 pid 与端口
 
 ## Doctor
@@ -85,4 +85,5 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 - [插件装载与可视化配置](features/plugins-config.md)：验证插件启用状态与配置字段声明
 - [扫码登录与凭据保存](features/auth.md)：验证 OAuth 登录链路与凭据归属
 - [模型注册与可用性](features/models.md)：验证静态模型清单向客户端的报送
+- [对话链路](features/chat.md)：验证流式与非流式请求的真实回复
 - [额度查询与版本门禁](features/quota.md)：验证额度接口与宿主版本依赖

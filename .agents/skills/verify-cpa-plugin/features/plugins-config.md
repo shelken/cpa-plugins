@@ -39,6 +39,6 @@ Preconditions:
 
 ## Gotchas
 
-- 页面提示「该插件没有声明可视化配置字段」 -> 插件在宿主配置中未设 `enabled: true`，或插件在当前发布的二进制中未声明 `ConfigFields`
+- 页面提示「该插件没有声明可视化配置字段」 -> 先读 `metadata.version` 与 `config_fields`：`registered` 为 `false` 说明宿主没装载该二进制，`enabled` 为 `false` 说明配置里没启用。两者都为 `true` 而 `config_fields` 仍为空，说明宿主跑的产物版本早于声明 `ConfigFields` 的那次提交，源码里的声明没有随产物发布，须升版本重新出包再更新宿主
 - 动态库位于目录但 `registered` 恒为 `false` -> 宿主配置 `plugins.configs.<id>` 缺失或 `enabled` 为 `false`
 - 配置文件中的明文密钥被自动替换为 bcrypt 哈希 -> 属于宿主预期防护行为，通过 `sec-run printenv CPA_TOKEN` 提取真实明文

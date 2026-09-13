@@ -29,7 +29,7 @@ Preconditions:
   ```bash
   go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/quota/fetch -method POST -body '{"auth_index":"<auth-index>"}'
   ```
-  输出包含剩余配额与换算后的 `RemainingFraction` 百分比
+  输出按分组给出剩余比例，JSON 字段为 `remainingFraction`
 
 ## Gotchas
 
