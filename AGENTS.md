@@ -14,12 +14,9 @@
 
 ## 约束
 
-- 严禁直接手动编辑 `registry.json`。修改插件清单后统一运行 `go run scripts/build-registry.go` 生成。
-- 发布或更新特定插件后，运行 `go run scripts/verify-registry-install.go <plugin-id>` 进行定向产物校验。
-- 仅编译发布 `linux/amd64` 与 `linux/arm64` 两个平台的动态库二进制。
-- 因为有些插件不适合开源，工作流在必要时引入私有仓库进行构建。
-- 为每个插件编写独立的 `README.md`，编写前阅读相关 SKILL。
-- 每次提交前，检查对应插件 `README.md` 是否需要更新。
+- 因为有些插件不适合开源，工作流在必要时引入私有仓库进行构建
+- 为每个插件编写独立的 `README.md`，编写前阅读相关 SKILL
+- 每次提交前，检查对应插件 `README.md` 是否需要更新
 
 ## 仓库参考
 
