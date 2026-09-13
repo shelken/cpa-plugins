@@ -1,45 +1,47 @@
 # 扫码登录与凭据保存
 
-管理面板发起官方 OAuth 登录流程，扫码后将凭据持久化存储并在宿主内绑定渠道
+用户在管理面板发起官方 OAuth 登录, 授权后凭据持久化并在宿主内绑定渠道
 
 ## Sub-features
 
-- `auth-url` 插件生成并返回官方扫码登录地址及会话标识
+- `auth-url` 插件生成官方扫码登录地址与会话标识
 - `auth-poll` 轮询会话状态直至用户完成手机授权
 - `auth-files-parse` 宿主解析凭据文件并标记渠道归属
 
 ## How to get to it (user POV)
 
-- 在管理界面凭据页选择对应渠道发起登录
+- 管理界面凭据页选择渠道发起登录
 - 手机端打开链接或扫码确认授权
-- 凭据自动落盘至宿主凭据目录，账号列表中出现新条目
+- 凭据落盘至宿主凭据目录, 账号列表出现新条目
 
-## Driving it with management-api.go
+## Driving it
 
 Preconditions:
 
-- 插件已在宿主中处于启用状态
-- 能够通过管理面访问鉴权接口
+- 插件已启用 (`effective_enabled` 为 `true`)
+- 管理面鉴权接口可达
 
-- **查询已有凭据列表。** 检查当前系统已加载的所有凭据及渠道归属：
+- **查询已有凭据。** 确认当前凭据与渠道归属 (`account_type` 对插件渠道恒为 null, 宿主从 StorageJSON 凭据推导不出类型, 不作判据):
   ```bash
-  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/auth-files | jq '.files[] | {id, provider, status, account_type}'
+  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/auth-files | jq '.files[] | {id, provider, status}'
   ```
-  输出中目标账号的 `provider` 必须精确匹配插件标识（如 `workbuddy`），`status` 须为 `active`
+  目标账号 `provider` 与插件 id 一致 (如 `workbuddy`), `status` 为 `active`
 
-- **发起登录请求。** 生成新的授权会话：
+- **发起登录。** 生成新授权会话, 响应含授权链接 `url` 与会话 `state`:
   ```bash
-  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/workbuddy-auth-url
+  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/<provider>-auth-url
   ```
-  响应返回包含授权链接 `url` 与会话 `state`
 
-- **检查登录结果。** 待外部扫码确认后，轮询状态直至完成：
+- **检查登录结果。** 外部扫码确认后轮询直至 `status` 为 `ok`; 未扫码中间态是 `wait` (宿主把插件内部的 `pending` 转换成 `wait`), 断言 `pending` 会误报:
   ```bash
   go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/get-auth-status?state=<state>'
   ```
 
+- **二次确认凭据归属。** 登录成功后重跑第一步的查询, 新条目 `provider` 与 `status` 满足判据; 这次查询同时是凭据落盘的副作用证明
+
 ## Gotchas
 
-- 已登录账号但客户端调用提示 unknown provider -> 检查 `auth-files` 中对应条目的 `provider` 字段是否与插件标识一致
-- 账号鉴权失败后后续请求直接报 503 -> 宿主触发了凭据失败冷却熔断，需等待冷却结束或重启宿主进程
-- 登录中途终止残留悬挂会话 -> 发送 `DELETE /v0/management/oauth-session?state=<state>` 释放服务端会话
+- 已登录但调用报 unknown provider -> 查 `auth-files` 对应条目的 `provider` 是否与插件 id 一致
+- 鉴权失败后请求直接 503 -> 宿主触发凭据失败冷却熔断, 等冷却结束或重启宿主; 冷却期失败不能当功能失败
+- 登录中途终止残留悬挂会话 -> `go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/oauth-session?state=<state>' -method DELETE` 释放服务端会话; 脚本默认 GET, 缺 `-method DELETE` 会 404
+- 登录链路驱动沙箱时管理密钥用 `-token-file`, 生产密钥对沙箱必然 401

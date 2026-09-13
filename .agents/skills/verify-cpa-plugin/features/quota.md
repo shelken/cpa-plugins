@@ -1,6 +1,6 @@
 # 额度查询与版本门禁
 
-管理面板提供各渠道实时配额查询，该能力由宿主版本门禁控制
+管理面板提供各渠道实时配额查询, 该能力由宿主版本门禁控制
 
 ## Sub-features
 
@@ -9,29 +9,33 @@
 
 ## How to get to it (user POV)
 
-- 打开管理界面额度页查看各渠道余额与额度条
-- 概览列表中显示对应渠道的剩余比例
+- 管理界面额度页查看各渠道余额与额度条
+- 概览列表显示对应渠道的剩余比例
+- 管理面接口 `GET /v0/management/quota/providers` 与 `POST /v0/management/quota/fetch`
 
-## Driving it with management-api.go
+## Driving it
 
 Preconditions:
 
-- 宿主运行版本须满足 `>= v7.2.159`
-- 插件在宿主中处于启用状态且 `supports_quota` 为 `true`
+- 宿主版本 `>= v7.2.159`
+- 插件已启用且 `supports_quota` 为 `true`
+- 目标凭据 `status` 为 `active`; 额度数值是否真实可用取决于凭据可用性 (postmortems/003)
 
-- **查询额度提供方。** 检查宿主是否成功识别插件的额度扩展点：
+- **查询额度提供方。** 确认宿主识别了插件的额度扩展点, 预期 `HTTP 200` 且列表含目标插件条目:
   ```bash
   go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/quota/providers
   ```
-  预期返回状态码 `HTTP 200`，且列表中包含对应插件条目。若返回 `HTTP 404` 则表明宿主版本过低
 
-- **拉取账号实时额度。** 根据账号凭据索引获取实时余额：
+- **拉取实时额度。** 按凭据索引取实时余额, 输出按分组给出剩余比例, JSON 字段为 `remainingFraction`。`auth_index` 的值取 `auth-files` 条目的 `auth_index` 字段 (8 位哈希, 如 `27f747038b35e8c7`), 不是文件 id:
   ```bash
-  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/quota/fetch -method POST -body '{"auth_index":"<auth-index>"}'
+  AUTH_INDEX=$(go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/auth-files \
+    | jq -r '[.files[] | select(.provider=="<id>" and .status=="active")][0].auth_index')
+  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/quota/fetch -method POST -body "{\"auth_index\":\"$AUTH_INDEX\"}"
   ```
-  输出按分组给出剩余比例，JSON 字段为 `remainingFraction`
+  断言返回真实数值级余额 (与该渠道定价量级对照), 不是 0 或空; 记录该数值供后续验收对照
 
 ## Gotchas
 
-- 管理面板完全不显示额度且接口直接返回 404 -> 宿主运行版本低于 `v7.2.159`，额度路由在此版本尚未实现，需升级宿主镜像
-- 额度查询返回 502 错误 -> 上游返回的部分精确度数值带有字符串格式，插件须使用兼容反序列化类型处理
+- 额度页全空且接口 404 -> 宿主版本低于 `v7.2.159`, 额度路由尚未实现, 升级宿主镜像
+- 额度查询返回 502 -> 上游部分精确度数值带字符串格式, 插件须用兼容反序列化类型处理
+- 多账号场景按凭据逐条 fetch, 两条凭据各自返回余额且互不影响 (验收清单硬门禁)
