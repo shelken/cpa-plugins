@@ -150,6 +150,7 @@ jobs:
 
           gh release download "${PLUGIN_ID}/v${VERSION}" --pattern '*.zip' --dir dist
           go run scripts/release.go record --plugin "${PLUGIN_ID}" --dist dist
+          go run scripts/build-registry.go --check
 
           if git diff --quiet "plugins/${PLUGIN_ID}/plugin.json" registry.json; then
             echo "两个文件均无变化，跳过提交"
