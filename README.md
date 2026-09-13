@@ -56,7 +56,7 @@ go run scripts/dev-sandbox.go --plugin workbuddy --host /path/to/cliproxyapi
 # --keep 保留宿主机进程与沙箱目录，便于继续手工调试
 ```
 
-断言三件事：宿主日志出现 `plugin loaded` 与 `plugin registered`；`/v1/models` 覆盖插件静态清单（`plugins/<id>/data/static-config.json`）声明的全部模型；实现额度能力的插件出现在 `quota/providers` 列表中。
+断言四件事：宿主日志出现 `plugin loaded` 与 `plugin registered`；`/v1/models` 覆盖插件静态清单（`plugins/<id>/data/static-config.json`）声明的全部模型；管理面对声明了 `ConfigFields` 的插件返回非空 `config_fields`；实现额度能力的插件出现在 `quota/providers` 列表中。
 
 ### 4. 发布工具 (`scripts/release.go`)
 
@@ -82,15 +82,30 @@ go run scripts/check-plugins.go --release-ready  # 发布门禁：未回填哈�
 
 ## 发布流程
 
+产物是按标签构建的：只改代码不升版本，标签就还指向旧提交，线上跑的就仍是旧产物，代码里的新声明到不了宿主。因此改动插件必须同步递增两处版本号——源码里 `plugin.Register` 的 `Version` 与 `plugin.json` 的 `version`。
+
 ```bash
-go run scripts/check-plugins.go --release-ready                    # 1. 发布门禁
-git tag workbuddy/v0.1.0 && git push origin workbuddy/v0.1.0       # 2. 触发 CI 构建并发布
-gh release download workbuddy/v0.1.0 --pattern '*.zip' --dir dist  # 3. 取回真实产物
-go run scripts/release.go record --plugin workbuddy --dist dist    # 4. 回填哈希并重建清单
-git add plugins/workbuddy/plugin.json registry.json && git commit  # 5. 提交
+# 1. 改插件, 同步升源码注册元数据与 plugin.json 的版本号
+go run scripts/dev-sandbox.go -plugin workbuddy                    # 2. 本地沙箱断言
+git add -A && git commit                                           # 3. 提交
+go run scripts/check-plugins.go --release-ready                    # 4. 发布门禁
+git tag workbuddy/v<X.Y.Z> && git push origin workbuddy/v<X.Y.Z>   # 5. 打标签触发 CI 构建并发布
+gh release download workbuddy/v<X.Y.Z> --pattern '*.zip' --dir dist # 6. 取回真实产物
+go run scripts/release.go record --plugin workbuddy --dist dist    # 7. 回填哈希并重建清单
+git add plugins/workbuddy/plugin.json registry.json && git commit  # 8. 提交
+go run scripts/verify-registry-install.go workbuddy                # 9. 校验线上产物与哈希
 ```
 
-第 3、4 步不可省。宿主对 `sha256` 是必填项，缺失时报 `artifact checksum missing`，而哈希只能由真实产物得出。
+第 6、7 步不可省。宿主对 `sha256` 是必填项，缺失时报 `artifact checksum missing`，而哈希只能由真实产物得出。
+
+第 9 步通过后，在宿主侧把插件更新到新版本，再用管理面确认版本与配置字段都到位：
+
+```bash
+go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins \
+  | jq -c '.plugins[] | select(.id=="workbuddy") | {version: .metadata.version, config_fields}'
+```
+
+判据是 `version` 等于新标签的版本号，且声明过 `ConfigFields` 的插件 `config_fields` 非空。两者缺一，说明宿主仍跑旧产物。
 
 ## 在 CLIProxyAPI (home-ops) 中订阅
 
