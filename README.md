@@ -82,7 +82,7 @@ go run scripts/check-plugins.go --release-ready  # 发布门禁：未回填哈�
 
 ## 发布流程
 
-产物是按标签构建的：只改代码不升版本，标签就还指向旧提交，线上跑的就仍是旧产物，代码里的新声明到不了宿主。因此改动插件必须同步递增两处版本号——源码里 `plugin.Register` 的 `Version` 与 `plugin.json` 的 `version`。
+产物是按标签构建的：只改代码不升版本，标签就还指向旧提交，线上跑的就仍是旧产物，代码里的新声明到不了宿主。因此改动插件必须同步递增两处版本号：源码里 `plugin.Register` 的 `Version`，以及 `plugin.json` 的 `version`。
 
 ```bash
 # 1. 改插件, 同步升源码注册元数据与 plugin.json 的版本号
