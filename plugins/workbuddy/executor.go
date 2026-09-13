@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 
@@ -374,8 +375,8 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 					break
 				}
 
-				if strings.HasPrefix(trimmed, "data:") {
-					emitErr := callHostStreamEmit(streamID, line)
+				if payload, ok := ssePayload(trimmed); ok {
+					emitErr := callHostStreamEmit(streamID, []byte(payload))
 					if emitErr != nil {
 						break
 					}
@@ -418,7 +419,9 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 		payload = req.OriginalRequest
 	}
 
-	bodyBytes, err := prepareChatRequestBody(payload, manifest, profile, false)
+	// 上游只接受流式对话, 发 stream:false 会被拒 (400/11101) 并把凭据打成不可用,
+	// 因此这里始终按流式请求上游, 在插件内聚合成单条完整响应再交给宿主。
+	bodyBytes, err := prepareChatRequestBody(payload, manifest, profile, true)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("prepare non-stream chat body: %w", err)
 	}
@@ -446,9 +449,154 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("upstream chat error %d: %s", resp.StatusCode, string(respBytes))
 	}
 
+	aggregated, err := aggregateChatStream(respBytes)
+	if err != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("aggregate upstream stream: %w", err)
+	}
+
 	return pluginapi.ExecutorResponse{
-		Payload: respBytes,
+		Payload: aggregated,
 	}, nil
+}
+
+// 宿主会自己给每段载荷补上 SSE 的 data: 前缀, 插件交出去的必须是裸载荷,
+// 否则客户端收到的是 "data: data: {...}"。
+func ssePayload(trimmedLine string) (string, bool) {
+	if !strings.HasPrefix(trimmedLine, "data:") {
+		return "", false
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "data:"))
+	if payload == "" {
+		return "", false
+	}
+	return payload, true
+}
+
+type chatCompletionMessage struct {
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []toolCall `json:"tool_calls,omitempty"`
+}
+
+type chatCompletionChoice struct {
+	Index        int                   `json:"index"`
+	Message      chatCompletionMessage `json:"message"`
+	FinishReason string                `json:"finish_reason"`
+}
+
+type chatCompletionResponse struct {
+	ID      string                 `json:"id"`
+	Object  string                 `json:"object"`
+	Created int64                  `json:"created"`
+	Model   string                 `json:"model"`
+	Choices []chatCompletionChoice `json:"choices"`
+	Usage   json.RawMessage        `json:"usage,omitempty"`
+}
+
+// 把上游的流式增量拼回一条完整响应。工具调用按索引合并, 参数分片直接续接。
+func aggregateChatStream(raw []byte) ([]byte, error) {
+	out := chatCompletionResponse{Object: "chat.completion"}
+	var content, reasoning strings.Builder
+	calls := make(map[int]*toolCall)
+	var order []int
+	finish := ""
+	seen := false
+
+	for _, line := range strings.Split(string(raw), "\n") {
+		payload, ok := ssePayload(strings.TrimSpace(line))
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+
+		var chunk struct {
+			ID      string `json:"id"`
+			Created int64  `json:"created"`
+			Model   string `json:"model"`
+			Choices []struct {
+				Delta struct {
+					Content          string     `json:"content"`
+					ReasoningContent string     `json:"reasoning_content"`
+					ToolCalls        []toolCall `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage json.RawMessage `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+		seen = true
+
+		if chunk.ID != "" {
+			out.ID = chunk.ID
+		}
+		if chunk.Created != 0 {
+			out.Created = chunk.Created
+		}
+		if chunk.Model != "" {
+			out.Model = chunk.Model
+		}
+
+		for _, choice := range chunk.Choices {
+			content.WriteString(choice.Delta.Content)
+			reasoning.WriteString(choice.Delta.ReasoningContent)
+			if choice.FinishReason != "" {
+				finish = choice.FinishReason
+			}
+			for _, call := range choice.Delta.ToolCalls {
+				index := 0
+				if call.Index != nil {
+					index = *call.Index
+				}
+				existing, ok := calls[index]
+				if !ok {
+					clone := call
+					clone.Index = nil
+					calls[index] = &clone
+					order = append(order, index)
+					continue
+				}
+				if call.ID != "" {
+					existing.ID = call.ID
+				}
+				if call.Type != "" {
+					existing.Type = call.Type
+				}
+				if call.Function.Name != "" {
+					existing.Function.Name = call.Function.Name
+				}
+				existing.Function.Arguments += call.Function.Arguments
+			}
+		}
+
+		if len(chunk.Usage) > 0 && string(chunk.Usage) != "null" {
+			out.Usage = chunk.Usage
+		}
+	}
+
+	if !seen {
+		return nil, fmt.Errorf("上游流式响应里没有可解析的帧")
+	}
+
+	sort.Ints(order)
+	var toolCalls []toolCall
+	for _, index := range order {
+		toolCalls = append(toolCalls, *calls[index])
+	}
+
+	out.Choices = []chatCompletionChoice{{
+		Index: 0,
+		Message: chatCompletionMessage{
+			Role:             "assistant",
+			Content:          content.String(),
+			ReasoningContent: reasoning.String(),
+			ToolCalls:        toolCalls,
+		},
+		FinishReason: finish,
+	}}
+
+	return json.Marshal(out)
 }
 
 func handleCountTokens(req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {

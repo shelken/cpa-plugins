@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -230,5 +231,134 @@ func TestPrepareChatRequestBodyProfileDifferences(t *testing.T) {
 	}
 	if cliMap["store"] != false {
 		t.Errorf("expected store false in cli profile, got %v", cliMap["store"])
+	}
+}
+
+func TestSSEPayloadStripsFramingPrefix(t *testing.T) {
+	// 宿主会补自己的 data: 前缀, 插件只能交出裸载荷, 交整行就会变成 "data: data: {...}"。
+	if payload, ok := ssePayload(`data: {"id":"abc"}`); !ok || payload != `{"id":"abc"}` {
+		t.Errorf("应剥掉一层 data: 前缀, 实际 ok=%v payload=%q", ok, payload)
+	}
+	if _, ok := ssePayload("data:   "); ok {
+		t.Error("空载荷的心跳帧不应下发")
+	}
+	if _, ok := ssePayload(": keep-alive"); ok {
+		t.Error("非 data 行不应下发")
+	}
+}
+
+func TestAggregateChatStreamRebuildsCompletion(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		`data: {"id":"abc","model":"hy3","object":"chat.completion.chunk","created":1789305164,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":""}],"usage":null}`,
+		`data: {"id":"abc","model":"hy3","object":"chat.completion.chunk","created":1789305164,"choices":[{"index":0,"delta":{"content":"","reasoning_content":"先算"},"finish_reason":""}],"usage":null}`,
+		`data: {"id":"abc","model":"hy3","object":"chat.completion.chunk","created":1789305164,"choices":[{"index":0,"delta":{"content":"","reasoning_content":"再算"},"finish_reason":""}],"usage":null}`,
+		`data: {"id":"abc","model":"hy3","object":"chat.completion.chunk","created":1789305164,"choices":[{"index":0,"delta":{"content":"链路正常"},"finish_reason":""}],"usage":null}`,
+		`data: {"id":"abc","model":"hy3","object":"chat.completion.chunk","created":1789305164,"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":31,"total_tokens":51,"completion_tokens_details":{"reasoning_tokens":27}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n"))
+
+	out, err := aggregateChatStream(raw)
+	if err != nil {
+		t.Fatalf("聚合失败: %v", err)
+	}
+
+	var resp struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Model   string `json:"model"`
+		Created int64  `json:"created"`
+		Choices []struct {
+			Index        int    `json:"index"`
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			Details          struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("聚合结果不是合法 JSON: %v, 原文 %s", err, out)
+	}
+
+	if resp.Object != "chat.completion" {
+		t.Errorf("object 应为 chat.completion, 实际 %q", resp.Object)
+	}
+	if resp.ID != "abc" || resp.Model != "hy3" || resp.Created != 1789305164 {
+		t.Errorf("标识字段未透传: id=%q model=%q created=%d", resp.ID, resp.Model, resp.Created)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("应聚合成单条 choice, 实际 %d 条", len(resp.Choices))
+	}
+	choice := resp.Choices[0]
+	if choice.Message.Role != "assistant" {
+		t.Errorf("role 应为 assistant, 实际 %q", choice.Message.Role)
+	}
+	if choice.Message.Content != "链路正常" {
+		t.Errorf("正文增量未续接, 实际 %q", choice.Message.Content)
+	}
+	if choice.Message.ReasoningContent != "先算再算" {
+		t.Errorf("推理增量未续接, 实际 %q", choice.Message.ReasoningContent)
+	}
+	if choice.FinishReason != "stop" {
+		t.Errorf("finish_reason 应为 stop, 实际 %q", choice.FinishReason)
+	}
+	if resp.Usage.PromptTokens != 20 || resp.Usage.CompletionTokens != 31 || resp.Usage.Details.ReasoningTokens != 27 {
+		t.Errorf("用量未透传: %+v", resp.Usage)
+	}
+}
+
+func TestAggregateChatStreamMergesToolCallFragments(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		`data: {"id":"t1","model":"hy3","created":1,"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"ci"}}]},"finish_reason":""}],"usage":null}`,
+		`data: {"id":"t1","model":"hy3","created":1,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ty\":\"hz\"}"}}]},"finish_reason":"tool_calls"}],"usage":null}`,
+		`data: [DONE]`,
+		``,
+	}, "\n"))
+
+	out, err := aggregateChatStream(raw)
+	if err != nil {
+		t.Fatalf("聚合失败: %v", err)
+	}
+
+	var resp struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				ToolCalls []map[string]any `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("聚合结果不是合法 JSON: %v", err)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("应合并成 1 个工具调用, 实际 %+v", resp.Choices)
+	}
+	call := resp.Choices[0].Message.ToolCalls[0]
+	if call["id"] != "call_1" {
+		t.Errorf("工具调用 id 丢失, 实际 %v", call["id"])
+	}
+	// 非流式响应的 message.tool_calls 不带 index, 带上会让部分客户端解析失败。
+	if _, ok := call["index"]; ok {
+		t.Error("聚合后的工具调用不应保留流式的 index 字段")
+	}
+	fn, _ := call["function"].(map[string]any)
+	if fn["name"] != "get_weather" {
+		t.Errorf("函数名丢失, 实际 %v", fn["name"])
+	}
+	if fn["arguments"] != `{"city":"hz"}` {
+		t.Errorf("参数分片未续接, 实际 %q", fn["arguments"])
+	}
+	if resp.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("finish_reason 应为 tool_calls, 实际 %q", resp.Choices[0].FinishReason)
 	}
 }
