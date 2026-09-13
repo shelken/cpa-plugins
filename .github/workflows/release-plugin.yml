@@ -38,9 +38,15 @@ jobs:
           - goos: linux
             goarch: amd64
             runner: ubuntu-latest
+            extension: ".so"
           - goos: linux
             goarch: arm64
             runner: ubuntu-24.04-arm
+            extension: ".so"
+          - goos: darwin
+            goarch: arm64
+            runner: macos-14
+            extension: ".dylib"
 
     steps:
       - name: Checkout
@@ -49,7 +55,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: plugins/${{ needs.parse-tag.outputs.plugin_id }}/go.mod
           cache: true
 
       - name: Build dynamic library
@@ -58,25 +64,30 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           PLUGIN_ID: ${{ needs.parse-tag.outputs.plugin_id }}
+          EXTENSION: ${{ matrix.extension }}
         run: |
           cd "plugins/${PLUGIN_ID}"
-          go build -buildmode=c-shared -o "${PLUGIN_ID}.so" .
+          go build -buildmode=c-shared -o "${PLUGIN_ID}${EXTENSION}" .
         shell: bash
 
+      # 三处命名都由宿主 internal/pluginstore 定死, 改动会导致安装失败:
+      # 资产名 = <id>_<version>_<goos>_<goarch>.zip (ArchiveName);
+      # 包内只允许一个根级动态库, 名为 <id><扩展名> 或 <id>-v<version><扩展名>;
+      # 校验文件必须叫 checksums.txt。
       - name: Pack zip
         id: pack
-        shell: pwsh
+        shell: bash
         env:
           PLUGIN_ID: ${{ needs.parse-tag.outputs.plugin_id }}
           VERSION: ${{ needs.parse-tag.outputs.version }}
+          GOOS_NAME: ${{ matrix.goos }}
+          GOARCH_NAME: ${{ matrix.goarch }}
+          EXTENSION: ${{ matrix.extension }}
         run: |
-          $pluginId = $env:PLUGIN_ID
-          $version = $env:VERSION
-          New-Item -ItemType Directory -Force -Path staging | Out-Null
-          Copy-Item "plugins/$pluginId/$pluginId.so" staging/
-          $asset = "${pluginId}_${version}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
-          Compress-Archive -Path "staging/$pluginId.so" -DestinationPath $asset -Force
-          "asset=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          asset="${PLUGIN_ID}_${VERSION}_${GOOS_NAME}_${GOARCH_NAME}.zip"
+          ( cd "plugins/${PLUGIN_ID}" && zip "${asset}" "${PLUGIN_ID}${EXTENSION}" )
+          mv "plugins/${PLUGIN_ID}/${asset}" .
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
