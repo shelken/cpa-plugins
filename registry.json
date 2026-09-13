@@ -76,7 +76,7 @@
       "name": "WorkBuddy",
       "description": "Tencent WorkBuddy / CodeBuddy Provider Plugin for CLIProxyAPI",
       "author": "shelken",
-      "version": "0.1.4",
+      "version": "0.2.0",
       "repository": "https://github.com/shelken/cpa-plugins",
       "homepage": "https://github.com/shelken/cpa-plugins",
       "license": "MIT",
@@ -91,23 +91,23 @@
           {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "36e3ca630b462c46658a187cc5769cef37404a71d2e3c1c6517f2433e5d37f82",
-            "size": 2733399,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.4/workbuddy_0.1.4_darwin_arm64.zip"
+            "sha256": "6d1e449e2c4e404459f665ef572282361efb024d82f1fb968a761f3cb651147a",
+            "size": 2738123,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.0/workbuddy_0.2.0_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "7f81e82b85df32dcac64115926f421242fd0163c2fbed2349e50831e025213a9",
-            "size": 5377029,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.4/workbuddy_0.1.4_linux_amd64.zip"
+            "sha256": "0f529653bead07b4d35fa0250b9568dfdd7acc20615f2be5127e42e168d1aaa4",
+            "size": 5383690,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.0/workbuddy_0.2.0_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "7154e781d0aa6f1eacbc18f21aea48768d58cae5fece9e21280e25637f85e4c8",
-            "size": 4868246,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.4/workbuddy_0.1.4_linux_arm64.zip"
+            "sha256": "3fe58a9884f76ec0f49fe1fdc77663d025dd469cab5da1beb440db78c3ce01c1",
+            "size": 4873808,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.0/workbuddy_0.2.0_linux_arm64.zip"
           }
         ],
         "type": "direct"
