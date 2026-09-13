@@ -71,6 +71,39 @@ go run scripts/dev-sandbox.go -plugin workbuddy -host-src <已 checkout 到该 t
 
 需要留下宿主动管理面时加 `-keep`，它会保留进程并在结尾打印密钥文件路径。收尾见 Cleanup。
 
+## 生产实例
+
+沙箱之外的宿主（用户自己部署的那台）是唯一能证明"真能用"的地方。它同时是别人的生产环境，按只读对待。
+
+**先确认可达性与目标，再动手。** 401 表示网络通、只差密钥；超时才是网络不通。两者要分开说，别混成一句"连不上"。本机走了代理时加 `--noproxy '*'`，否则内网地址会被代理吃掉：
+
+```bash
+BASE=http://<host>:8317
+curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}\n' "$BASE/v0/management/plugins"
+```
+
+版本、插件清单、能力声明一律从管理面读，不要从部署仓库里推断：仓库里的镜像 tag 与 Pod 实际运行的版本可能不一致。
+
+**密钥只走文件，不进命令回显。** 按优先级三选一：
+
+1. 请用户把密钥写进 `~/.cache/cpa-plugins/keys/<名字>`（权限 600）。之后全程只写 `$(cat …)`，不 `echo`、不 `sed`、不落日志。
+2. 用户已在浏览器登录管理面时，用 CDP 从页面里取，**直接重定向进同一个文件，不打印**。
+3. 都不行就请用户自己在页面里完成需要鉴权的动作，agent 只读页面呈现的结果。
+
+```bash
+K=$(cat ~/.cache/cpa-plugins/keys/<名字>)
+curl -s --noproxy '*' -H "Authorization: Bearer $K" "$BASE/v0/management/plugins" \
+  | jq -c '.plugins[]|{id,registered,enabled,effective_enabled,supports_quota,version:.metadata.version}'
+```
+
+命令原文里只有 `$(cat …)`，密钥不进对话、不进证据、不进 shell 历史（前面加空格或改用 `read`）。
+
+**证据要脱敏。** 落盘前裁掉 `Authorization`、token、邮箱、手机号、完整账号标识、余额绝对值；只留方法、路径、状态码、能力字段、数量与比例。要留整份响应就先过字段裁剪，别整包 `tee`。别开 `set -x`。
+
+**只读边界。** 生产实例默认只做 GET。安装、卸载、登出、改配置属于写操作，要用户明确同意，并说明会影响到谁。
+
+**界面那侧。** 管理面 UI 只是 API 的前端，能读 API 就不点界面。必须用界面时（二维码、图形化状态）按 `browser-best-practice` 连 CDP，读页面文本即可；UI 的 network 记录带鉴权头，别把它的内容贴进证据。
+
 ## Doctor
 
 任何异常先跑 Doctor，别急着改代码。三项只读检查：
@@ -97,6 +130,20 @@ curl -s -H "$A" http://127.0.0.1:18317/v0/management/quota/providers | jq -c '.'
 - `GET /v0/management/<provider>-auth-url` 发起登录，返回 `{status, url, state}`；`GET /v0/management/get-auth-status?state=<state>` 轮询，返回 `wait` / `ok` / `error`。
 - `POST /v1/chat/completions`、`POST /v0/management/quota/fetch` 是需要凭据的真实链路。
 
+管理面端点（在 `v7.2.159` 上实测过，比照着猜省事）：
+
+|端点|看什么|
+|:---|:---|
+|`GET /v0/management/plugins`|装载与能力声明，含 `config_fields`（插件声明的可视化配置项，空数组就是没声明）|
+|`GET /v0/management/plugins/<id>/config`|该插件在 `plugins.configs.<id>` 下的实际配置，如 `{"enabled":true}`|
+|`GET /v0/management/config`|宿主运行配置，看代理、日志开关等|
+|`GET /v0/management/auth-files`|已落盘的凭据（沙箱里恒为空）|
+|`GET /v0/management/plugin-store`|商店视角的插件与来源|
+|`GET /v0/management/logs`|宿主的日志文件，**仅 `logging-to-file: true` 时可用**，否则 400 且报 `logging to file disabled`|
+|`quota/providers`、`quota/fetch`、`quota/reset`|额度，需 `v7.2.159` 及以上宿主|
+
+没有"测试模型"这类端点。真实对话只能走 `/v1/chat/completions`，用**客户端 API key**，管理密钥不能替代。
+
 同一端口只能有一个实例。要并行验两个插件就显式换 `-port`，不要双驱同一个宿主。
 
 ## Evidence
@@ -106,6 +153,7 @@ curl -s -H "$A" http://127.0.0.1:18317/v0/management/quota/providers | jq -c '.'
 - 单测、编译通过、"日志里没报错"都不是生产端证据。生产端证据来自真实宿主进程或真实产物。
 - 用户能看见的行为，就用用户看见的方式证明；不要用只存在于测试里的入口去替代真实入口。
 - 跳过就是跳过。某个入口因为缺前置条件没跑到，直说它没跑到，不要用另一条路的结果冒充。
+- 生产实例上的日志走 `GET /v0/management/logs`（需 `logging-to-file: true`）。关掉文件日志时日志只在 stdout，归运维侧的容器日志或日志聚合管，agent 读不到就直接说读不到，不要拿别的证据顶上。
 
 证据落盘到 `~/.cache/cpa-plugins/evidence/<plugin>/<日期>-<特性>/`，至少包含该轮的 `host.log` 与把管理面响应存下来的文本：
 
