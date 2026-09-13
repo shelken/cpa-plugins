@@ -61,6 +61,9 @@ go run scripts/dev-sandbox.go --plugin workbuddy --host /path/to/cliproxyapi
 ### 4. 发布工具 (`scripts/release.go`)
 
 ```bash
+# 消费变更集, 产出新版本并同步源码里的版本字面量、plugin.json 的版本与三处产物地址
+go run scripts/release.go version --plugin workbuddy
+
 # 本地打包当前平台，产物按宿主契约命名并自检，输出 sha256
 go run scripts/release.go pack --plugin workbuddy --out dist
 
@@ -76,29 +79,41 @@ go run scripts/release.go record --plugin workbuddy --dist dist
 go run scripts/check-plugins.go                  # 常规检查
 go run scripts/check-plugins.go --strict         # 警告也视为失败
 go run scripts/check-plugins.go --release-ready  # 发布门禁：未回填哈希即失败
+go run scripts/check-plugins.go --changesets-base origin/main  # 变更集门禁：有改动却没有版本意图即失败
 ```
 
-检查项：`registry.json` 与插件清单同步；`plugin.json` 的 id 与目录名一致；声明的平台都存在于发布工作流的构建矩阵；产物 URL 末段等于宿主期望的资产名；`sha256` 已回填且为 64 位十六进制；每个插件都有 `README.md`；各插件所钉宿主 SDK 版本与 go 指令是否一致。
+检查项：`registry.json` 与插件清单同步；`plugin.json` 的 id 与目录名一致；声明的平台都存在于发布工作流的构建矩阵；产物 URL 末段等于宿主期望的资产名；`sha256` 已回填且为 64 位十六进制；每个插件都有 `README.md`；各插件所钉宿主 SDK 版本与 go 指令是否一致。变更集门禁的基准 ref 在 CI 里由 push 的 `github.event.before` 或 PR 的 `base.sha` 自动给出。
 
 ## 发布流程
 
-产物是按标签构建的：只改代码不升版本，标签就还指向旧提交，线上跑的就仍是旧产物，代码里的新声明到不了宿主。因此改动插件必须同步递增两处版本号：源码里 `plugin.Register` 的 `Version`，以及 `plugin.json` 的 `version`。
+版本、三处产物地址与标签都由脚本产出，人只写变更集。改了 `plugins/<id>/` 却没有留下版本意图，CI 会在差异上失败。
 
-```bash
-# 1. 改插件, 同步升源码注册元数据与 plugin.json 的版本号
-go run scripts/dev-sandbox.go -plugin workbuddy                    # 2. 本地沙箱断言
-git add -A && git commit                                           # 3. 提交
-go run scripts/check-plugins.go --release-ready                    # 4. 发布门禁
-git tag workbuddy/v<X.Y.Z> && git push origin workbuddy/v<X.Y.Z>   # 5. 打标签触发 CI 构建并发布
-gh release download workbuddy/v<X.Y.Z> --pattern '*.zip' --dir dist # 6. 取回真实产物
-go run scripts/release.go record --plugin workbuddy --dist dist    # 7. 回填哈希并重建清单
-git add plugins/workbuddy/plugin.json registry.json && git commit  # 8. 提交
-go run scripts/verify-registry-install.go workbuddy                # 9. 校验线上产物与哈希
+变更集是一个 json 文件，放在 `plugins/<id>/changesets/` 下，`bump` 取 `patch`、`minor`、`major` 之一，多个变更集共存时取最高档：
+
+```json
+{"bump": "patch", "note": "会话标识改用宿主的规范会话 id"}
 ```
 
-第 6、7 步不可省。宿主对 `sha256` 是必填项，缺失时报 `artifact checksum missing`，而哈希只能由真实产物得出。
+```bash
+# 1. 写变更集, 文件名自取, 建议带日期与主题
+# 2. 产出新版本: 同步源码里的 Version 字面量、plugin.json 的 version 与三处产物地址, 清空旧哈希, 删除已消费的变更集
+go run scripts/release.go version --plugin workbuddy
+# 3. 本地预检产物命名与包结构 (只支持当前平台)
+go run scripts/release.go pack --plugin workbuddy --out dist
+# 4. 常规检查, 此时 sha256 待回填属于预期警告, 不要用 --release-ready
+go run scripts/check-plugins.go
+# 5. 提交并按第 2 步打印的标签推送
+git add plugins/workbuddy && git commit
+git tag workbuddy/v<X.Y.Z> && git push origin main workbuddy/v<X.Y.Z>
+# 6. CI 构建发布完成后, 校验线上产物与哈希
+go run scripts/verify-registry-install.go -local workbuddy
+```
 
-第 9 步通过后，在宿主侧把插件更新到新版本，再用管理面确认版本与配置字段都到位：
+第 2 步会打印新版本与标签，标签的版本号必须与 `plugin.json` 一致，否则产物地址指向不存在的资产。
+
+哈希不需要人工回填：标签触发构建发布后，工作流的 `record` 作业自己下载产物、跑 `release.go record`，再把 `plugin.json` 与 `registry.json` 的改动提交回 main。哈希只能由真实上传的产物得出，本地 `pack` 的产物不能用来回填。
+
+第 6 步通过后，在宿主侧把插件更新到新版本，再用管理面确认版本与配置字段都到位：
 
 ```bash
 go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins \
