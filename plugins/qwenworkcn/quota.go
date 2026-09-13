@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -51,27 +50,37 @@ func handleQuotaFetch(ctx context.Context, manifest *ManifestV2, cfg *PluginConf
 		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("parse storage json for quota fetch: %w", err)
 	}
 
-	// 1. 尝试从 openApi /api/v2/quota/usage 查询额度包
-	usageResp, errUsage := fetchQuotaUsage(ctx, manifest, cred)
-	if errUsage != nil {
-		if strings.Contains(errUsage.Error(), "HTTP 401") {
-			return pluginapi.QuotaFetchResponse{}, errUsage
-		}
-	} else if usageResp != nil {
-		return *usageResp, nil
-	}
-
-	// 2. usage 无包时，从 webOrigin /user/wallets 查询钱包余额（qwenwork 主源）
+	// 1. 钱包余额是主源 (ADR-0001 方案 A): 普通账号的 usage 常年返回全 null, 真实可用额度在钱包里。
+	//    先查 usage 会让一个剩余为 0 的历史用量包盖住有钱包余额的账号, 把账号误报成额度耗尽。
 	walletResp, errWallet := fetchWalletsQuota(ctx, manifest, cred)
-	if errWallet != nil {
-		if strings.Contains(errWallet.Error(), "HTTP 401") {
-			return pluginapi.QuotaFetchResponse{}, errWallet
-		}
-	} else if walletResp != nil {
+	if walletResp != nil {
 		return *walletResp, nil
 	}
+	if isUnauthorizedErr(errWallet) {
+		return pluginapi.QuotaFetchResponse{}, errWallet
+	}
 
-	// 3. 两者都无数据返回零值组
+	// 2. 钱包无余额时用用量包兜底
+	usageResp, errUsage := fetchQuotaUsage(ctx, manifest, cred)
+	if usageResp != nil {
+		return *usageResp, nil
+	}
+	if isUnauthorizedErr(errUsage) {
+		return pluginapi.QuotaFetchResponse{}, errUsage
+	}
+
+	// 3. 没有任何源给出额度: 只有两路都确实成功才算真的没有额度。
+	//    上游故障被当成额度耗尽上报, 会让管理面把可用账号显示成空额度。
+	if errUsage != nil {
+		if errWallet != nil {
+			return pluginapi.QuotaFetchResponse{}, fmt.Errorf("额度查询失败: wallets: %v; usage: %w", errWallet, errUsage)
+		}
+		return pluginapi.QuotaFetchResponse{}, errUsage
+	}
+	if errWallet != nil {
+		return pluginapi.QuotaFetchResponse{}, errWallet
+	}
+
 	return pluginapi.QuotaFetchResponse{
 		Subscription: &pluginapi.QuotaSubscription{
 			Plan:     "QwenWork",
@@ -240,13 +249,18 @@ func fetchWalletsQuota(ctx context.Context, manifest *ManifestV2, cred *Credenti
 	}
 
 	var remaining float64
+	earliest := ""
 	for _, w := range wallets {
 		remaining += w.Balance
+		// 永久有效的钱包没有 valid_to, 不能让它把其他钱包的真实到期日盖掉。
+		if w.ValidTo != "" && (earliest == "" || w.ValidTo < earliest) {
+			earliest = w.ValidTo
+		}
 	}
 
 	desc := fmt.Sprintf("余额 %.0f credits", remaining)
-	if wallets[0].ValidTo != "" {
-		desc += fmt.Sprintf(", 最早 %s 到期", wallets[0].ValidTo)
+	if earliest != "" {
+		desc += fmt.Sprintf(", 最早 %s 到期", earliest)
 	}
 
 	return &pluginapi.QuotaFetchResponse{
@@ -303,9 +317,10 @@ func parseWalletsBody(bodyBytes []byte) []walletItem {
 		})
 	}
 
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].ValidTo < out[j].ValidTo
-	})
-
 	return out
+}
+
+// 上游 401 要让宿主看见, 以便刷新凭据或标记账号; 换成普通错误会被当作"没额度"处理。
+func isUnauthorizedErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "HTTP 401")
 }
