@@ -1,29 +1,33 @@
 {
-  "id": "echo-probe",
-  "name": "Echo Probe",
-  "description": "Minimal probe plugin to verify cpa-plugins build, release, and loading in CLIProxyAPI.",
   "author": "shelken",
-  "version": "0.1.1",
-  "repository": "https://github.com/shelken/cpa-plugins",
+  "description": "Minimal probe plugin to verify cpa-plugins build, release, and loading in CLIProxyAPI.",
+  "id": "echo-probe",
+  "install": {
+    "artifacts": [
+      {
+        "goarch": "amd64",
+        "goos": "linux",
+        "sha256": "7e15c0a3114b4391bff69dadff0af4823c5621b97730d15bffeb3b10abcadfb6",
+        "size": 3102697,
+        "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_linux_amd64.zip"
+      },
+      {
+        "goarch": "arm64",
+        "goos": "linux",
+        "sha256": "e2d4b4b6583f9052627c763bb9c2c61982d6e58bf2350bf222da4304d8a49fdc",
+        "size": 2833359,
+        "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_linux_arm64.zip"
+      }
+    ],
+    "type": "direct"
+  },
   "license": "MIT",
+  "name": "Echo Probe",
+  "repository": "https://github.com/shelken/cpa-plugins",
   "tags": [
     "probe",
     "usage",
     "management"
   ],
-  "install": {
-    "type": "direct",
-    "artifacts": [
-      {
-        "goos": "linux",
-        "goarch": "amd64",
-        "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_linux_amd64.zip"
-      },
-      {
-        "goos": "linux",
-        "goarch": "arm64",
-        "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_linux_arm64.zip"
-      }
-    ]
-  }
+  "version": "0.1.1"
 }

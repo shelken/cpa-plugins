@@ -49,11 +49,15 @@
           {
             "goarch": "amd64",
             "goos": "linux",
+            "sha256": "7e15c0a3114b4391bff69dadff0af4823c5621b97730d15bffeb3b10abcadfb6",
+            "size": 3102697,
             "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
+            "sha256": "e2d4b4b6583f9052627c763bb9c2c61982d6e58bf2350bf222da4304d8a49fdc",
+            "size": 2833359,
             "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_linux_arm64.zip"
           }
         ],
@@ -80,16 +84,22 @@
           {
             "goarch": "arm64",
             "goos": "darwin",
+            "sha256": "8cc4a9d1f04cc2c0a8b73a1b5aa126e1aa2bc4fe5844e3057baf28372a594d2d",
+            "size": 2726775,
             "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
+            "sha256": "03c506ebea0059aea8e2699676c74bfe721e1b1e198390c56358d98cb651b6d1",
+            "size": 5361713,
             "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
+            "sha256": "27f61e949f02a3d4257708c01df015e278827f2431b68716e65fde9661550d96",
+            "size": 4851958,
             "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_arm64.zip"
           }
         ],
