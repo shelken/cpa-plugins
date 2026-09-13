@@ -13,6 +13,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 变更集门禁要拿基准提交做 diff, 浅克隆取不到
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -23,3 +26,9 @@ jobs:
       - name: Verify registry.json is up to date
         run: |
           go run scripts/build-registry.go --check
+
+      - name: Check changesets for modified plugins
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          go run scripts/check-plugins.go --changesets-base "$BASE_REF"

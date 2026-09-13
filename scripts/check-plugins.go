@@ -12,7 +12,7 @@ package main
 //
 //	--strict                把 WARN 也视为失败
 //	--release-ready         发布门禁: 未回填 sha256 视为失败
-//	--changesets-base <ref> 基准 ref: 检查有改动的插件是否包含新增变更集
+//	--changesets-base <ref> 基准 ref: 检查有改动的插件是否留下变更集(写入或消费都算)
 // 退出码 0 表示通过, 1 表示存在失败项。
 
 import (
@@ -304,26 +304,29 @@ func checkChangesets(r *report, baseRef string) {
 		return
 	}
 
-	revisionRange := fmt.Sprintf("%s...HEAD", baseRef)
-
-	cmdACMR := exec.Command("git", "diff", "--name-only", "--diff-filter=ACMR", revisionRange)
-	outACMR, err := cmdACMR.CombinedOutput()
-	if err != nil {
-		r.fail("解析 ref %q 失败: %s", baseRef, strings.TrimSpace(string(outACMR)))
+	if _, err := exec.Command("git", "rev-parse", "--verify", "--quiet", baseRef+"^{commit}").Output(); err != nil {
+		// 新分支首次推送时基准是全零, 浅克隆也可能拿不到该提交; 取不到就不判, 不误报。
+		r.warn("基准 ref %q 在本仓库不可解析, 跳过变更集门禁", baseRef)
 		return
 	}
 
-	cmdA := exec.Command("git", "diff", "--name-only", "--diff-filter=A", revisionRange)
-	outA, err := cmdA.CombinedOutput()
+	cmd := exec.Command("git", "diff", "--name-status", fmt.Sprintf("%s...HEAD", baseRef))
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		r.fail("获取新增文件失败 (ref %q): %s", baseRef, strings.TrimSpace(string(outA)))
+		r.fail("解析 ref %q 的差异失败: %s", baseRef, strings.TrimSpace(string(output)))
 		return
 	}
 
-	pluginsWithChanges := map[string]bool{}
-	for _, line := range strings.Split(string(outACMR), "\n") {
-		path := filepath.ToSlash(strings.TrimSpace(line))
-		if path == "" || !strings.HasPrefix(path, "plugins/") {
+	touchedChangeset := map[string]bool{}
+	codeChanges := map[string]bool{}
+
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		if len(fields) < 2 {
+			continue
+		}
+		path := filepath.ToSlash(strings.TrimSpace(fields[len(fields)-1]))
+		if !strings.HasPrefix(path, "plugins/") {
 			continue
 		}
 		rest := strings.TrimPrefix(path, "plugins/")
@@ -331,36 +334,59 @@ func checkChangesets(r *report, baseRef string) {
 		if len(parts) < 2 {
 			continue
 		}
-		pluginID := parts[0]
+		id := parts[0]
+
 		if len(parts) >= 3 && parts[1] == "changesets" {
+			if strings.HasSuffix(parts[len(parts)-1], ".json") {
+				touchedChangeset[id] = true
+			}
 			continue
 		}
-		pluginsWithChanges[pluginID] = true
-	}
-
-	pluginsWithNewChangeset := map[string]bool{}
-	for _, line := range strings.Split(string(outA), "\n") {
-		path := filepath.ToSlash(strings.TrimSpace(line))
-		if path == "" || !strings.HasPrefix(path, "plugins/") {
+		if len(parts) == 2 && parts[1] == "plugin.json" {
+			// 版本与产物地址是 release.go 写出来的产物, 不代表有人改了插件
 			continue
 		}
-		rest := strings.TrimPrefix(path, "plugins/")
-		parts := strings.Split(rest, "/")
-		if len(parts) >= 3 && parts[1] == "changesets" && strings.HasSuffix(parts[len(parts)-1], ".json") {
-			pluginID := parts[0]
-			pluginsWithNewChangeset[pluginID] = true
-		}
+		codeChanges[id] = true
 	}
 
-	sortedPlugins := make([]string, 0, len(pluginsWithChanges))
-	for id := range pluginsWithChanges {
-		sortedPlugins = append(sortedPlugins, id)
+	mergeBaseOut, err := exec.Command("git", "merge-base", baseRef, "HEAD").Output()
+	if err != nil {
+		r.warn("无法求 %q 与 HEAD 的共同祖先, 跳过变更集门禁", baseRef)
+		return
 	}
-	sort.Strings(sortedPlugins)
+	mergeBase := strings.TrimSpace(string(mergeBaseOut))
 
-	for _, id := range sortedPlugins {
-		if !pluginsWithNewChangeset[id] {
-			r.fail("插件 %s 有代码改动却未新增变更集 (plugins/%s/changesets/*.json)", id, id)
-		}
+	ids := make([]string, 0, len(codeChanges))
+	for id := range codeChanges {
+		ids = append(ids, id)
 	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		if touchedChangeset[id] {
+			continue
+		}
+		// 变更集也可能在提交前就被 version 子命令消费掉了(本仓直接提交 main 的流程),
+		// 此时 plugin.json 的版本变化就是留下了版本意图的证据。
+		before, after := manifestVersionAt(mergeBase, id), manifestVersionAt("HEAD", id)
+		if before != "" && after != "" && before != after {
+			continue
+		}
+		r.fail("插件 %s 有改动却未留下版本意图: 新增 plugins/%s/changesets/<名字>.json 并跑 release.go version, 或先提交变更集", id, id)
+	}
+}
+
+// manifestVersionAt 读取某次提交里插件清单声明的版本; 取不到时返回空串。
+func manifestVersionAt(ref, id string) string {
+	output, err := exec.Command("git", "show", fmt.Sprintf("%s:plugins/%s/plugin.json", ref, id)).Output()
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(output, &doc); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(doc.Version)
 }
