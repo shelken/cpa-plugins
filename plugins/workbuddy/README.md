@@ -44,6 +44,18 @@ plugins:
 
 模型清单来自官方客户端可见的模型集合，按官方自身的隐藏规则过滤后内嵌，不额外增删。清单包含上下文长度、输出上限与推理档位。
 
+## 额度查询页面
+
+插件自带一个管理页（菜单名 `WorkBuddy Quota`），装好后在管理面板侧边栏点进去，即可看到每个 WorkBuddy 凭据的套餐档位与剩余比例进度条。
+
+- 数据来源是宿主管理 API：`/v0/management/auth-files` 列凭据，`/v0/management/plugins/workbuddy/quota` 查单个凭据额度，凭据密钥全程留在宿主进程
+- 页面与面板同源，自动读取面板记住的管理密钥；读取失败（如面板改了本地存储格式）时页面会给出手贴密钥的输入框兜底
+- 手动「刷新」按钮更新数据，无自动轮询
+
+另外，v0.2.0 修复了额度查询请求体与桌面客户端抓包不一致的问题（字段误发成字符串导致上游 400），修复后额度接口才能返回真实数据。
+
+## 发布与安装
+
 发布由标签触发，标签形如 `workbuddy/v<version>`，构建 `linux/amd64`、`linux/arm64`、`darwin/arm64` 三个平台
 
 宿主对产物命名有硬性要求，完整契约与常见安装错误见 [docs/reference/host-artifact-contract.md](../../docs/reference/host-artifact-contract.md)。`install.artifacts[].sha256` 必填，只能由真实发布产物回填，完整流程见 [docs/how-to/plugin-release.md](../../docs/how-to/plugin-release.md)
