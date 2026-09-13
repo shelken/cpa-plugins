@@ -1,6 +1,7 @@
 name: Check Registry
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
