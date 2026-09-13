@@ -352,7 +352,7 @@ func main() {
 		var doc manifestFile
 		if json.Unmarshal(raw, &doc) == nil {
 			for i := range doc.Models {
-				if strings.EqualFold(doc.Models[i].ID, *model) {
+				if strings.EqualFold(doc.Models[i].ID, strings.TrimPrefix(*model, "workbuddy/")) {
 					run.modelDef = &doc.Models[i]
 					break
 				}
