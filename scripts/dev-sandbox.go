@@ -51,6 +51,7 @@ type sandbox struct {
 	library    string
 	configPath string
 	logPath    string
+	keyPath    string
 
 	process *exec.Cmd
 	logFile *os.File
@@ -91,7 +92,7 @@ func main() {
 	}
 	fmt.Printf("\n[+] 沙箱验证通过。日志: %s\n", s.logPath)
 	if s.keep {
-		fmt.Printf("[+] 宿主仍在运行: http://127.0.0.1:%d (管理密钥见 %s)\n", s.port, s.configPath)
+		fmt.Printf("[+] 宿主仍在运行: http://127.0.0.1:%d (管理密钥: %s)\n", s.port, s.keyPath)
 		return
 	}
 	s.stop()
@@ -188,7 +189,7 @@ func (s *sandbox) resolveHost(sdkVersion string) error {
 		return err
 	}
 	fmt.Printf("[*] 从 %s 构建宿主 (v%s) 到缓存...\n", s.hostSource, sdkVersion)
-	build := exec.Command("go", "build", "-o", cached, ".")
+	build := exec.Command("go", "build", "-o", cached, "./cmd/server")
 	build.Dir = s.hostSource
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
@@ -218,6 +219,7 @@ func (s *sandbox) prepareLayout() error {
 	s.library = filepath.Join(s.sandboxDir, "plugins", runtime.GOOS, runtime.GOARCH, s.pluginID+extension)
 	s.configPath = filepath.Join(s.sandboxDir, "config.yaml")
 	s.logPath = filepath.Join(s.sandboxDir, "host.log")
+	s.keyPath = filepath.Join(s.sandboxDir, "management-key")
 
 	if err := os.MkdirAll(filepath.Dir(s.library), 0o755); err != nil {
 		return err
@@ -264,6 +266,10 @@ func (s *sandbox) writeConfig() error {
 	}
 
 	if err := os.WriteFile(s.configPath, []byte(builder.String()), 0o644); err != nil {
+		return err
+	}
+	// 宿主装载后会把明文密钥哈希再写回配置, 明文随即消失; 要驱动管理面只能从这里读。
+	if err := os.WriteFile(s.keyPath, []byte(s.secret), 0o600); err != nil {
 		return err
 	}
 	fmt.Printf("[*] 写入沙箱配置: %s\n", s.configPath)
