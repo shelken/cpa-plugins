@@ -71,7 +71,9 @@ type streamChunk struct {
 type turn struct {
 	status       int
 	frames       int
+	stream       bool
 	done         bool
+	readErr      string
 	doubleFrame  int
 	invalidPay   string
 	content      string
@@ -193,9 +195,14 @@ func (r *runner) chat(messages []chatMessage, effort string, stream bool) (turn,
 		return turn{}, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	// 读取中断比"帧少了"更隐蔽: 不接住错误的话, 尾部帧(含 usage)凭空消失,
+	// 上层只会看到缓存与推理字数莫名变少。
+	raw, readErr := io.ReadAll(resp.Body)
 
-	out := turn{status: resp.StatusCode}
+	out := turn{status: resp.StatusCode, stream: stream}
+	if readErr != nil {
+		out.readErr = readErr.Error()
+	}
 	if len(raw) > 0 {
 		head := raw
 		if len(head) > 160 {
@@ -229,10 +236,17 @@ func (r *runner) chat(messages []chatMessage, effort string, stream bool) (turn,
 			out.finishReason = single.Choices[0].FinishReason
 		}
 		out.usage = single.Usage
+		if readErr != nil {
+			return out, fmt.Errorf("响应体读取中断: %s", readErr)
+		}
 		return out, nil
 	}
 
-	return parseStream(raw, out), nil
+	out = parseStream(raw, out)
+	if readErr != nil {
+		return out, fmt.Errorf("响应体读取中断(已收到 %d 帧, 终止帧 %v): %s", out.frames, out.done, readErr)
+	}
+	return out, nil
 }
 
 func parseStream(raw []byte, out turn) turn {
@@ -455,20 +469,40 @@ func main() {
 		if highTurn.usage != nil {
 			highReasoning = highTurn.usage.CompletionDetails.ReasoningTokens
 		}
+		lowChars := len([]rune(lowTurn.reasoning))
+		highChars := len([]rune(highTurn.reasoning))
+
 		switch {
 		case lowErr != nil || highErr != nil:
 			record("思考深度传递", "FAIL", "请求未成功, 无法比较")
-		case lowReasoning < 0 || highReasoning < 0:
-			record("思考深度传递", "FAIL", "响应缺 reasoning_tokens, 无法比较")
-		case highReasoning > lowReasoning:
-			record("思考深度传递", "PASS",
-				fmt.Sprintf("reasoning_tokens %s=%d < %s=%d", low, lowReasoning, high, highReasoning))
-		case highReasoning == lowReasoning:
-			record("思考深度传递", "WARN",
-				fmt.Sprintf("两档 reasoning_tokens 相同(%d), 可能是采样波动, 也可能档位没传到上游", highReasoning))
+		case lowReasoning >= 0 && highReasoning >= 0:
+			switch {
+			case highReasoning > lowReasoning:
+				record("思考深度传递", "PASS",
+					fmt.Sprintf("reasoning_tokens %s=%d < %s=%d", low, lowReasoning, high, highReasoning))
+			case highReasoning == lowReasoning:
+				record("思考深度传递", "WARN",
+					fmt.Sprintf("两档 reasoning_tokens 相同(%d), 可能是采样波动, 也可能档位没传到上游", highReasoning))
+			default:
+				record("思考深度传递", "FAIL",
+					fmt.Sprintf("高档推理反而更少: %s=%d > %s=%d", low, lowReasoning, high, highReasoning))
+			}
 		default:
-			record("思考深度传递", "FAIL",
-				fmt.Sprintf("高档推理反而更少: %s=%d > %s=%d", low, lowReasoning, high, highReasoning))
+			// 上游没回报 usage 时退到推理正文长度: 档位有没有传到上游, 从推理量仍看得出来。
+			switch {
+			case lowChars == 0 || highChars == 0:
+				record("思考深度传递", "FAIL",
+					fmt.Sprintf("两档都没有 reasoning_tokens, 推理正文也是空的 (low=%d 字, high=%d 字)", lowChars, highChars))
+			case highChars > lowChars:
+				record("思考深度传递", "PASS",
+					fmt.Sprintf("usage 缺失, 按推理字数比较: %s=%d 字 < %s=%d 字", low, lowChars, high, highChars))
+			case highChars == lowChars:
+				record("思考深度传递", "WARN",
+					fmt.Sprintf("usage 缺失, 两档推理字数相同(%d), 分不出档位", highChars))
+			default:
+				record("思考深度传递", "FAIL",
+					fmt.Sprintf("usage 缺失, 高档推理反而更少: %s=%d 字 > %s=%d 字", low, lowChars, high, highChars))
+			}
 		}
 	} else {
 		fmt.Println("[思考深度] 跳过: 清单未声明该模型的档位")
@@ -494,6 +528,10 @@ func main() {
 func checkTurn(label string, t turn, err error) {
 	if err != nil {
 		record(label, "FAIL", "请求失败: "+err.Error()+" 响应头: "+truncate(t.rawHead, 80))
+		return
+	}
+	if t.stream && !t.done {
+		record(label, "FAIL", fmt.Sprintf("流式响应没有终止帧, 只收到 %d 帧", t.frames))
 		return
 	}
 	record(label, "OK", fmt.Sprintf("HTTP %d, %d 帧, 正文 %d 字, 推理 %d 字",

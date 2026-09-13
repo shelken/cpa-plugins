@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 var (
@@ -104,7 +106,7 @@ func TestBuildChatHeadersMatchDesktopClient(t *testing.T) {
 	}
 	cred := &Credential{UserID: "user-1", Credentials: TokenCredentials{Access: "token-1"}}
 
-	headers := buildChatHeaders(&profile, cred)
+	headers := buildChatHeaders(&profile, cred, "session-1")
 
 	if got := headers.Get("Authorization"); got != "Bearer token-1" {
 		t.Errorf("authorization = %q, want Bearer token-1", got)
@@ -140,6 +142,89 @@ func TestBuildChatHeadersMatchDesktopClient(t *testing.T) {
 		if !reUUID.MatchString(headers.Get(name)) {
 			t.Errorf("%s 应为带横线 UUID, 实际 %q", name, headers.Get(name))
 		}
+	}
+}
+
+func TestChatHeadersKeepConversationIdentityStable(t *testing.T) {
+	profile := ProfileConfig{}
+	cred := &Credential{UserID: "user-1", Credentials: TokenCredentials{Access: "token-1"}}
+
+	first := buildChatHeaders(&profile, cred, "session-1")
+	second := buildChatHeaders(&profile, cred, "session-1")
+	other := buildChatHeaders(&profile, cred, "session-2")
+
+	// 整轮对话里会话 id 与会话请求 id 必须不变, 否则上游每一轮都当成新会话, 前缀缓存无法复用。
+	if first.Get("X-Conversation-ID") != second.Get("X-Conversation-ID") {
+		t.Errorf("同一会话的会话 id 发生变化: %q -> %q", first.Get("X-Conversation-ID"), second.Get("X-Conversation-ID"))
+	}
+	if first.Get("X-Conversation-Request-ID") != second.Get("X-Conversation-Request-ID") {
+		t.Errorf("同一会话的会话请求 id 发生变化: %q -> %q",
+			first.Get("X-Conversation-Request-ID"), second.Get("X-Conversation-Request-ID"))
+	}
+	// 不同会话不能共用标识, 否则上游会把两次对话的前缀混在一起。
+	if first.Get("X-Conversation-ID") == other.Get("X-Conversation-ID") {
+		t.Errorf("不同会话共用会话 id: %q", other.Get("X-Conversation-ID"))
+	}
+	if first.Get("X-Conversation-Request-ID") == other.Get("X-Conversation-Request-ID") {
+		t.Errorf("不同会话共用会话请求 id: %q", other.Get("X-Conversation-Request-ID"))
+	}
+	// 会话 id 与会话请求 id 是两个不同的取值。
+	if first.Get("X-Conversation-ID") == first.Get("X-Conversation-Request-ID") {
+		t.Error("会话 id 与会话请求 id 撞成同一个值")
+	}
+	// 消息 id 每次请求都要新, 否则上游会把它当成同一条消息的重复提交。
+	if first.Get("X-Conversation-Message-ID") == second.Get("X-Conversation-Message-ID") {
+		t.Error("消息 id 应每次请求都变")
+	}
+}
+
+func TestSessionSeedUsesHostCanonicalSessionID(t *testing.T) {
+	profile := ProfileConfig{}
+	cred := &Credential{UserID: "user-1", Credentials: TokenCredentials{Access: "token-1"}}
+
+	firstTurn := pluginapi.ExecutorRequest{
+		Metadata:        map[string]any{canonicalSessionIDKey: "host-session-7"},
+		OriginalRequest: []byte(`{"model":"hy3","messages":[{"role":"user","content":"第一轮"}]}`),
+	}
+	thirdTurn := pluginapi.ExecutorRequest{
+		Metadata: map[string]any{canonicalSessionIDKey: "host-session-7"},
+		OriginalRequest: []byte(`{"model":"hy3","messages":[{"role":"user","content":"第一轮"},` +
+			`{"role":"assistant","content":"好"},{"role":"user","content":"第三轮"}]}`),
+	}
+	noMetadata := pluginapi.ExecutorRequest{
+		OriginalRequest: firstTurn.OriginalRequest,
+	}
+
+	hostFirst := buildChatHeaders(&profile, cred, sessionSeed(firstTurn, firstTurn.OriginalRequest))
+	hostThird := buildChatHeaders(&profile, cred, sessionSeed(thirdTurn, thirdTurn.OriginalRequest))
+	fallback := buildChatHeaders(&profile, cred, sessionSeed(noMetadata, noMetadata.OriginalRequest))
+
+	if hostFirst.Get("X-Conversation-ID") != hostThird.Get("X-Conversation-ID") {
+		t.Errorf("宿主给出的规范会话 id 未被跨轮沿用: %q -> %q",
+			hostFirst.Get("X-Conversation-ID"), hostThird.Get("X-Conversation-ID"))
+	}
+	if hostFirst.Get("X-Conversation-ID") == fallback.Get("X-Conversation-ID") {
+		t.Error("宿主给出的规范会话 id 被忽略, 结果与兜底取值相同")
+	}
+}
+
+func TestSessionSeedStableAcrossTurnsWithoutMetadata(t *testing.T) {
+	prefix := `{"model":"hy3","messages":[{"role":"system","content":"背景资料"},{"role":"user","content":"第一轮"}`
+	firstTurn := []byte(prefix + `]}`)
+	secondTurn := []byte(prefix + `,{"role":"assistant","content":"好"},{"role":"user","content":"第二轮"}]}`)
+	otherConversation := []byte(`{"model":"hy3","messages":[{"role":"system","content":"背景资料"},` +
+		`{"role":"user","content":"另一件事"}]}`)
+
+	account := pluginapi.ExecutorRequest{AuthID: "auth-1"}
+
+	if a, b := sessionSeed(account, firstTurn), sessionSeed(account, secondTurn); a != b {
+		t.Errorf("缺元数据时同一会话的不同轮次得到不同种子: %q / %q", a, b)
+	}
+	if a, c := sessionSeed(account, firstTurn), sessionSeed(account, otherConversation); a == c {
+		t.Errorf("缺元数据时不同对话得到相同种子: %q", a)
+	}
+	if a, d := sessionSeed(account, firstTurn), sessionSeed(pluginapi.ExecutorRequest{AuthID: "auth-2"}, firstTurn); a == d {
+		t.Error("缺元数据时不同账号得到相同种子")
 	}
 }
 

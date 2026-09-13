@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -272,11 +275,78 @@ func prepareChatRequestBody(reqPayload []byte, manifest *ManifestV2, profile *Pr
 	return json.Marshal(outMap)
 }
 
+// 对话请求不挂整体超时: 长思考流的响应体要读几十秒到几分钟, http.Client.Timeout
+// 会在中途掐断连接, 表现成尾部帧与 usage 整段消失。连接阶段仍保留上限, 响应体
+// 读取交给上游自然结束。
+var chatHTTPClient = func() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 60 * time.Second
+	return &http.Client{Transport: transport}
+}()
+
 func traceID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
-func buildChatHeaders(profile *ProfileConfig, cred *Credential) http.Header {
+// 宿主在鉴权选择阶段算好的规范会话 id 的元数据键, 定义见
+// sdk/cliproxy/executor.CanonicalSessionIDMetadataKey。
+const canonicalSessionIDKey = "canonical_session_id"
+
+// 会话级标识必须在同一轮对话里保持不变, 否则上游把每一轮都当成新会话, 前缀缓存
+// 无法复用。宿主已经把规范会话 id 算好并放进元数据, 直接用它的取值就能和客户端
+// 保持一致; 元数据缺失时按会话内不变的部分兜底。
+func sessionSeed(req pluginapi.ExecutorRequest, payload []byte) string {
+	if raw, ok := req.Metadata[canonicalSessionIDKey]; ok {
+		if seed, ok := raw.(string); ok && strings.TrimSpace(seed) != "" {
+			return seed
+		}
+	}
+
+	var inReq chatCompletionRequest
+	if err := json.Unmarshal(payload, &inReq); err != nil {
+		return req.AuthID
+	}
+
+	var sb strings.Builder
+	sb.WriteString(req.AuthID)
+	appendContent := func(msg chatMessage) {
+		raw, err := json.Marshal(msg.Content)
+		if err != nil {
+			return
+		}
+		sb.Write(raw)
+	}
+	for _, msg := range inReq.Messages {
+		if msg.Role == "system" || msg.Role == "developer" {
+			appendContent(msg)
+		}
+	}
+	for _, msg := range inReq.Messages {
+		if msg.Role == "user" {
+			appendContent(msg)
+			break
+		}
+	}
+
+	return sb.String()
+}
+
+// 把种子派生成客户端要求的两种取值形态: 带横线的 UUID 与 32 位无横线十六进制。
+func deriveUUID(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	raw := [16]byte{}
+	copy(raw[:], sum[:16])
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
+func deriveHex32(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:16])
+}
+
+func buildChatHeaders(profile *ProfileConfig, cred *Credential, seed string) http.Header {
 	headers := make(http.Header)
 
 	for k, v := range profile.Headers["chat"] {
@@ -286,12 +356,13 @@ func buildChatHeaders(profile *ProfileConfig, cred *Credential) http.Header {
 	// 取值形态照抄桌面客户端: 消息 id 与请求 id 相同, 会话请求 id 与根请求 id 相同,
 	// 这三类 id 为 32 位无横线十六进制; 会话 id 与连接 id 为带横线的 UUID。
 	// 客户端在对话接口上不发送 X-Session-ID, 故不设置。
+	// 会话 id 与会话请求 id 整轮不变, 只有消息 id 与 trace id 每次新。
 	messageID := traceID()
-	conversationRequestID := traceID()
+	conversationRequestID := deriveHex32("conversation-request\x00" + seed)
 
 	headers.Set("Authorization", "Bearer "+cred.AccessToken())
 	headers.Set("X-User-Id", cred.UserID)
-	headers.Set("X-Conversation-ID", uuid.NewString())
+	headers.Set("X-Conversation-ID", deriveUUID("conversation\x00"+seed))
 	headers.Set("X-Conversation-Request-ID", conversationRequestID)
 	headers.Set("X-Root-Request-ID", conversationRequestID)
 	headers.Set("X-Conversation-Message-ID", messageID)
@@ -333,13 +404,18 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 		return nil, fmt.Errorf("prepare stream chat body: %w", err)
 	}
 
+	seedPayload := req.OriginalRequest
+	if len(seedPayload) == 0 {
+		seedPayload = payload
+	}
+
 	chatURL := manifest.BuildURL(manifest.Endpoints.ChatCompletions)
 	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, chatURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create stream chat request: %w", err)
 	}
 
-	headers := buildChatHeaders(profile, cred)
+	headers := buildChatHeaders(profile, cred, sessionSeed(req, seedPayload))
 	httpReq.Header = headers
 
 	go func() {
@@ -347,7 +423,7 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 			_ = callHostStreamClose(streamID, "")
 		}()
 
-		resp, errDo := httpClient.Do(httpReq)
+		resp, errDo := chatHTTPClient.Do(httpReq)
 		if errDo != nil {
 			_ = callHostStreamClose(streamID, errDo.Error())
 			return
@@ -426,15 +502,20 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("prepare non-stream chat body: %w", err)
 	}
 
+	seedPayload := req.OriginalRequest
+	if len(seedPayload) == 0 {
+		seedPayload = payload
+	}
+
 	chatURL := manifest.BuildURL(manifest.Endpoints.ChatCompletions)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("create non-stream chat request: %w", err)
 	}
 
-	httpReq.Header = buildChatHeaders(profile, cred)
+	httpReq.Header = buildChatHeaders(profile, cred, sessionSeed(req, seedPayload))
 
-	resp, err := httpClient.Do(httpReq)
+	resp, err := chatHTTPClient.Do(httpReq)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("execute non-stream chat request: %w", err)
 	}
