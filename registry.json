@@ -36,7 +36,7 @@
       "name": "Echo Probe",
       "description": "Minimal probe plugin to verify cpa-plugins build, release, and loading in CLIProxyAPI.",
       "author": "shelken",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "repository": "https://github.com/shelken/cpa-plugins",
       "license": "MIT",
       "tags": [
@@ -49,14 +49,48 @@
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "46a6ad5fc89c21b7a80038cbec383265b8f51503f9a633af6faaa066bd2f0168",
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.0/echo-probe_0.1.0_linux_amd64.zip"
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "ea0eddd9e1f716a6001a848ef203f2184fcc25de11ba02e8861d64a45df4350e",
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.0/echo-probe_0.1.0_linux_arm64.zip"
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/echo-probe%2Fv0.1.1/echo-probe_0.1.1_linux_arm64.zip"
+          }
+        ],
+        "type": "direct"
+      }
+    },
+    {
+      "id": "workbuddy",
+      "name": "WorkBuddy",
+      "description": "Tencent WorkBuddy / CodeBuddy Provider Plugin for CLIProxyAPI",
+      "author": "shelken",
+      "version": "0.1.0",
+      "repository": "https://github.com/shelken/cpa-plugins",
+      "homepage": "https://github.com/shelken/cpa-plugins",
+      "license": "MIT",
+      "tags": [
+        "provider",
+        "workbuddy",
+        "codebuddy",
+        "tencent"
+      ],
+      "install": {
+        "artifacts": [
+          {
+            "goarch": "arm64",
+            "goos": "darwin",
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_darwin_arm64.zip"
+          },
+          {
+            "goarch": "amd64",
+            "goos": "linux",
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_amd64.zip"
+          },
+          {
+            "goarch": "arm64",
+            "goos": "linux",
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.1.0/workbuddy_0.1.0_linux_arm64.zip"
           }
         ],
         "type": "direct"
