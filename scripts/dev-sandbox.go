@@ -370,9 +370,12 @@ func (s *sandbox) assertModels() error {
 		return nil
 	}
 
+	// 插件注册侧可能给模型 id 加前缀 (workbuddy 的 enable-model-prefix, 默认开启),
+	// 清单声明的是裸 id; 断言按「前缀 id 或裸 id 命中其一」匹配。
 	var missing []string
 	for _, id := range declared {
-		if !served[id] {
+		prefixed := s.pluginID + "/" + id
+		if !served[id] && !served[prefixed] {
 			missing = append(missing, id)
 		}
 	}
