@@ -93,8 +93,11 @@ curl --noproxy '*' -s -m 5 -o /dev/null -w '%{http_code}\n' "$BASE/v0/management
 
 被拒时先分清是值错还是头错：同一个 `Authorization: Bearer` 头在本机沙箱可用、在目标返回 `invalid management key`，那是值不属于该实例，不是头写错了。
 
+**每条命令自己取一次密钥。** 工具调用之间不共享 shell 变量，上一轮定义的 `$K` 在下一轮就是空的。空令牌换来的 401 长得像"密钥错"，实际是你根本没把它带上，照着这个假象去换密钥会一路查到天亮。取值只写在同一条命令的开头，或落到文件里每轮 `$(cat …)` 读一次；下判断前先打印长度确认非空，不要用 401 反推密钥对不对。
+
 ```bash
 K=$(sec-run printenv <变量名>)   # 或 K=$(cat ~/.cache/cpa-plugins/keys/<名字>)
+# 取值与下面的请求必须在同一次调用里，中间断一轮 $K 就没了
 curl -s --noproxy '*' -H "Authorization: Bearer $K" "$BASE/v0/management/plugins" \
   | jq -c '.plugins[]|{id,registered,enabled,effective_enabled,supports_quota,version:.metadata.version}'
 ```
