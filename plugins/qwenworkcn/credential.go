@@ -160,6 +160,21 @@ func (c *Credential) ToAuthData(fileName string) (pluginapi.AuthData, error) {
 	}, nil
 }
 
+// stringList 读 JSON 解码后的字符串数组: 经 map[string]any 传下来的数组是 []any, 断言成 []string 必失败。
+func stringList(v any) []string {
+	items, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func asFiniteNumber(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:

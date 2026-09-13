@@ -127,12 +127,15 @@ func cleanMessages(rawMessages []chatMessage, supportsImages bool) []chatMessage
 
 			var validToolCalls []toolCall
 			for _, tc := range msg.ToolCalls {
-				var dummy any
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &dummy); err != nil {
-					if tc.ID != "" {
-						droppedToolCallIDs[tc.ID] = struct{}{}
+				// 无参函数的 arguments 是空串, 不是坏 JSON; 丢掉它会让随后的 tool 结果帧一起被剔除。
+				if args := strings.TrimSpace(tc.Function.Arguments); args != "" {
+					var dummy any
+					if err := json.Unmarshal([]byte(args), &dummy); err != nil {
+						if tc.ID != "" {
+							droppedToolCallIDs[tc.ID] = struct{}{}
+						}
+						continue
 					}
-					continue
 				}
 				validToolCalls = append(validToolCalls, tc)
 			}
@@ -435,9 +438,24 @@ func unwrapSSEFrame(payload string) unwrapResult {
 			return unwrapResult{IsDone: true}
 		}
 
-		return unwrapResult{RawChunk: inner}
+		// 内层也是上游帧: 业务错误 code 必须在这一层认出来, 否则错误 JSON 会被当成 chunk 发给客户端,
+		// 非流式聚合路径则会因为帧里没有 choices 而静默丢弃, 最后只报"没有可解析的帧"。
+		return validateChunkPayload(inner)
 	}
 
+	return validateParsedChunk(payload, parsed)
+}
+
+// validateChunkPayload 校验一条裸 chunk 载荷, 供形态 A 的内层复用。
+func validateChunkPayload(payload string) unwrapResult {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return unwrapResult{ErrorMsg: fmt.Sprintf("chat SSE 帧非 JSON: %s", truncate(payload, 120))}
+	}
+	return validateParsedChunk(payload, parsed)
+}
+
+func validateParsedChunk(payload string, parsed map[string]any) unwrapResult {
 	// 业务错误 code 字段检查
 	if codeVal, hasCode := parsed["code"]; hasCode && codeVal != nil && codeVal != float64(0) && codeVal != 0 {
 		msg := fmt.Sprintf("%v", parsed["message"])
@@ -485,7 +503,7 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 	}
 
 	orgID, _ := cred.extra["organization_id"].(string)
-	orgTags, _ := cred.extra["organization_tags"].([]string)
+	orgTags := stringList(cred.extra["organization_tags"])
 	var agreedPtr *bool
 	if v, ok := cred.extra["data_policy_agreed"].(bool); ok {
 		agreedPtr = &v
@@ -613,7 +631,7 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 	}
 
 	orgID, _ := cred.extra["organization_id"].(string)
-	orgTags, _ := cred.extra["organization_tags"].([]string)
+	orgTags := stringList(cred.extra["organization_tags"])
 	var agreedPtr *bool
 	if v, ok := cred.extra["data_policy_agreed"].(bool); ok {
 		agreedPtr = &v

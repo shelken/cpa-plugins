@@ -236,3 +236,37 @@ func TestHandleCountTokens(t *testing.T) {
 		t.Fatalf("countTokens payload = %s", string(resp.Payload))
 	}
 }
+
+// 网关包装帧里的业务错误必须在内层认出来, 否则错误 JSON 会被当成 chunk 下发给客户端。
+func TestUnwrapSSEFrameFormABusinessError(t *testing.T) {
+	frame := `{"body":"{\"code\":11002,\"message\":\"rate limited\"}","statusCodeValue":200}`
+	got := unwrapSSEFrame(frame)
+	if got.ErrorMsg == "" {
+		t.Fatalf("形态 A 内层业务错误未被识别, 结果: %+v", got)
+	}
+	if !strings.Contains(got.ErrorMsg, "11002") {
+		t.Fatalf("ErrorMsg = %q, want code 11002", got.ErrorMsg)
+	}
+}
+
+// 无参函数的 arguments 是空串, 丢掉它会让同一轮的工具结果一起消失。
+func TestCleanMessagesKeepsEmptyArgumentToolCall(t *testing.T) {
+	call := toolCall{ID: "call_1", Type: "function"}
+	call.Function.Name = "get_time"
+	call.Function.Arguments = ""
+
+	cleaned := cleanMessages([]chatMessage{
+		{Role: "assistant", ToolCalls: []toolCall{call}},
+		{Role: "tool", ToolCallID: "call_1", Content: "12:00"},
+	}, false)
+
+	if len(cleaned) != 2 {
+		t.Fatalf("messages = %d (%+v), want 2: 空 arguments 的工具调用与结果都被丢了", len(cleaned), cleaned)
+	}
+	if len(cleaned[0].ToolCalls) != 1 || cleaned[0].ToolCalls[0].Function.Name != "get_time" {
+		t.Fatalf("assistant tool_calls = %+v, want get_time", cleaned[0].ToolCalls)
+	}
+	if content, _ := cleaned[1].Content.(string); content != "12:00" {
+		t.Fatalf("tool 结果 = %v, want 12:00", cleaned[1].Content)
+	}
+}
