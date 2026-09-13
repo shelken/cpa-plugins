@@ -125,6 +125,18 @@ func secRun(name string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// readManagementToken 优先读沙箱 per-run 密钥文件, 未指定时回落 sec-run 的生产密钥。
+func readManagementToken(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return secRun("CPA_TOKEN")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 func (r *runner) managementGet(token, path string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(r.base, "/")+path, nil)
 	if err != nil {
@@ -337,22 +349,33 @@ func main() {
 	manifestPath := flag.String("manifest", "plugins/workbuddy/data/static-config.json", "静态模型清单路径")
 	prefixRepeats := flag.Int("prefix", 120, "长前缀段落重复次数, 用于制造可命中缓存的公共前缀")
 	timeout := flag.Duration("timeout", 180*time.Second, "单个请求超时")
+	tokenFile := flag.String("token-file", "", "管理密钥文件路径 (本地沙箱 per-run key), 设置时优先于 sec-run")
 	flag.Parse()
 
 	client := &http.Client{Timeout: *timeout}
 	run := &runner{base: *base, model: *model, client: client}
 
-	token := secRun("CPA_TOKEN")
+	token := readManagementToken(*tokenFile)
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "[-] 未能通过 sec-run 读取到 CPA_TOKEN, 不发任何请求")
+		if *tokenFile != "" {
+			fmt.Fprintf(os.Stderr, "[-] 读取 token-file 失败: %s\n", *tokenFile)
+		} else {
+			fmt.Fprintln(os.Stderr, "[-] 未能通过 sec-run 读取到 CPA_TOKEN, 不发任何请求")
+		}
 		os.Exit(3)
 	}
 
 	if raw, err := os.ReadFile(*manifestPath); err == nil {
 		var doc manifestFile
 		if json.Unmarshal(raw, &doc) == nil {
+			// 宿主注册 id 形如 <plugin>/<model>, 清单存裸 id。剥掉最后一个 "/" 之前的部分,
+			// 不能写死某个插件的前缀, 否则换插件时清单整个查不到, 思考判据会被静默跳过。
+			bareID := *model
+			if idx := strings.LastIndex(bareID, "/"); idx >= 0 {
+				bareID = bareID[idx+1:]
+			}
 			for i := range doc.Models {
-				if strings.EqualFold(doc.Models[i].ID, strings.TrimPrefix(*model, "workbuddy/")) {
+				if strings.EqualFold(doc.Models[i].ID, bareID) {
 					run.modelDef = &doc.Models[i]
 					break
 				}
@@ -397,7 +420,8 @@ func main() {
 	turn2, err2 := run.chat(history, "", true)
 	checkTurn("轮次2 流式", turn2, err2)
 	checkFraming(turn2)
-	checkCoT(turn2)
+	// 思考判据不挂这一轮: 提示词是复述型, 上游本就不一定思考, 拿它判思考输出是错靶子。
+	checkText(turn2)
 
 	if err2 == nil {
 		if strings.Contains(turn2.content, codeword) {
@@ -461,6 +485,9 @@ func main() {
 		checkTurn("低档 "+low, lowTurn, lowErr)
 		highTurn, highErr := run.chat(prompt, high, true)
 		checkTurn("高档 "+high, highTurn, highErr)
+		if highErr == nil {
+			checkCoT(highTurn)
+		}
 
 		lowReasoning, highReasoning := -1, -1
 		if lowTurn.usage != nil {
@@ -580,18 +607,29 @@ func checkNonStream(t turn, err error) {
 		fmt.Sprintf("HTTP %d, finish=%s, 正文 %d 字, %s", t.status, t.finishReason, len([]rune(t.content)), usage))
 }
 
+// checkCoT 只在推演型提示词 + 该模型最高档那一轮调用: 那里上游必出思考, 判据才只反映插件转发是否忠实。
+// 复述型提示词 (暗号、只回复两个字) 上游本就不一定思考, 拿它判思考输出是错靶子。
 func checkCoT(t turn) {
-	if strings.TrimSpace(t.reasoning) == "" {
-		record("思维链输出", "FAIL", "流式增量里没有 reasoning_content")
+	if strings.TrimSpace(t.reasoning) != "" {
+		record("思维链输出", "PASS",
+			fmt.Sprintf("推理增量 %d 字, 首段: %s", len([]rune(t.reasoning)), truncate(t.reasoning, 40)))
 		return
 	}
-	record("思维链输出", "PASS",
-		fmt.Sprintf("推理增量 %d 字, 首段: %s", len([]rune(t.reasoning)), truncate(t.reasoning, 40)))
-	if strings.TrimSpace(t.content) == "" {
-		record("正文输出", "WARN", "content 为空, 需要确认该模型是否只回思考")
-	} else {
-		record("正文输出", "PASS", truncate(t.content, 60))
+	if t.usage != nil && t.usage.CompletionDetails.ReasoningTokens > 0 {
+		record("思维链输出", "FAIL",
+			fmt.Sprintf("上游上报 reasoning_tokens=%d 但流里没有 reasoning_content, 插件丢了思考帧",
+				t.usage.CompletionDetails.ReasoningTokens))
+		return
 	}
+	record("思维链输出", "FAIL", "推演型提示词在上限档未出思考: 先查 effort 有没有传到上游")
+}
+
+func checkText(t turn) {
+	if strings.TrimSpace(t.content) == "" {
+		record("正文输出", "FAIL", "content 为空")
+		return
+	}
+	record("正文输出", "PASS", truncate(t.content, 60))
 }
 
 func reportCache(name string, t turn) {
