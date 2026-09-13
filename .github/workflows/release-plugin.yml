@@ -1,0 +1,111 @@
+name: Release Plugin
+
+on:
+  push:
+    tags:
+      - "*/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  parse-tag:
+    name: Parse Tag
+    runs-on: ubuntu-latest
+    outputs:
+      plugin_id: ${{ steps.parse.outputs.plugin_id }}
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Parse plugin ID and version
+        id: parse
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PLUGIN_ID="${TAG%%/*}"
+          RAW_VERSION="${TAG##*/}"
+          VERSION="${RAW_VERSION#v}"
+          echo "plugin_id=${PLUGIN_ID}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building plugin '${PLUGIN_ID}' version '${VERSION}'"
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: parse-tag
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-latest
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Build dynamic library
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          PLUGIN_ID: ${{ needs.parse-tag.outputs.plugin_id }}
+        run: |
+          cd "plugins/${PLUGIN_ID}"
+          go build -buildmode=c-shared -o "${PLUGIN_ID}.so" .
+        shell: bash
+
+      - name: Pack zip
+        id: pack
+        shell: pwsh
+        env:
+          PLUGIN_ID: ${{ needs.parse-tag.outputs.plugin_id }}
+          VERSION: ${{ needs.parse-tag.outputs.version }}
+        run: |
+          $pluginId = $env:PLUGIN_ID
+          $version = $env:VERSION
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          Copy-Item "plugins/$pluginId/$pluginId.so" staging/
+          $asset = "${pluginId}_${version}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          Compress-Archive -Path "staging/$pluginId.so" -DestinationPath $asset -Force
+          "asset=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.asset }}
+          path: ${{ steps.pack.outputs.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publish Release Assets
+    needs: [parse-tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Generate checksums.txt
+        run: |
+          cd assets
+          sha256sum *.zip > checksums.txt
+          cat checksums.txt
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            assets/*.zip
+            assets/checksums.txt
+          generate_release_notes: true

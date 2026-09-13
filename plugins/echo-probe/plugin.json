@@ -1,0 +1,13 @@
+{
+  "id": "echo-probe",
+  "name": "Echo Probe",
+  "description": "Minimal probe plugin to verify cpa-plugins build, release, and loading in CLIProxyAPI.",
+  "author": "shelken",
+  "version": "0.1.0",
+  "license": "MIT",
+  "tags": [
+    "probe",
+    "usage",
+    "management"
+  ]
+}
