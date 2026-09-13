@@ -28,10 +28,11 @@
 | 重复请求缓存(二次) | 同一请求连发两次, 第二次命中数大于 0 |
 | 思考深度传递 | 高档 `reasoning_tokens` 大于低档 (档位无数值差异时 WARN) |
 | 非流式链路 | 单条完整响应, `object` 为 `chat.completion`, 带 `finish_reason`; `usage` 缺失不判 FAIL |
+| 工具调用 流式 | 带 `tools` 与 `tool_choice:auto` 的请求返回 `finish_reason:"tool_calls"`, 函数名非空, `arguments` 是合法 JSON |
+| 工具调用 非流式 | 同一请求走聚合路径后仍带 `tool_calls` 与合法 `arguments` |
+| 工具结果消费 | 把首轮 `tool_calls` 与工具结果带回下一轮, 模型正文引用了工具返回的事实 |
 
 缓存判据要有可命中的公共前缀才有意义, 脚本默认用重复段落撑出足够长的 system 消息, 段落数由 `-prefix` 控制
-
-工具调用不在 `verify-chat.go` 覆盖范围内, 用两轮 curl 驱动, 见下文
 
 ## How to get to it (user POV)
 
@@ -51,15 +52,7 @@ Preconditions:
   go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> -manifest plugins/<id>/data/static-config.json
   ```
 
-- **跑工具调用两轮。** 第一轮带工具定义, 断言响应流含 `finish_reason:"tool_calls"` 且 `arguments` 为合法 JSON:
-  ```bash
-  curl -s -m 60 -H 'Content-Type: application/json' \
-    -d '{"model":"<id>/<model>","messages":[{"role":"user","content":"现在几点"}], \
-         "tools":[{"type":"function","function":{"name":"get_time","description":"获取当前时间","parameters":{"type":"object","properties":{}}}}], \
-         "tool_choice":"auto"}' \
-    http://<host>:8317/v1/chat/completions
-  ```
-  第二轮把 assistant `tool_calls` 与 tool 结果拼进 `messages`, 断言模型引用了工具结果
+- **工具调用已并入全量判据。** 无需手工发请求, 首轮带 `get_weather` 定义断言 `finish_reason:"tool_calls"` 与合法 `arguments`, 次轮带回调用与结果断言模型引用了结果
 
 - **跑构造层单测。** 不依赖上游凭据, 改动请求构造后先跑:
   ```bash
@@ -75,8 +68,9 @@ Preconditions:
 
 ## Gotchas
 
-- 别拿复述型提示词判思考 -> 上游是否输出思考由 effort 档与问题难度共同决定, 实测同一账号「只回复两个字」在 low/medium/high 档分别空 4/6、4/6、2/6, max 档 0/6, 参考实现同账号空 5/8; 思考判据要挂推演型提示词加该模型最高档, 挂复述轮必然抖动 (postmortems/007)
-- 清单查找要剥任意渠道前缀 -> 宿主注册 id 形如 `<plugin>/<model>`, 清单存裸 id; 按固定插件前缀剥离会让换插件后整个清单查不到, 思考与深度判据被跳过, 表现成一堆 PASS 但实际上关键判据没跑 (postmortems/007)
+- 判据只写在文档手工步骤里等于没有判据 -> 手工路径要自己拼密钥、拼凭据、拼两轮消息, 任一环断裂就没人再跑, 验收格长期空着也无人发现; 工具调用判据此前就是这样空的, 见 `postmortems/009`
+- 别拿复述型提示词判思考 -> 上游是否输出思考由 effort 档与问题难度共同决定, 实测同一账号「只回复两个字」在 low/medium/high 档分别空 4/6、4/6、2/6, max 档 0/6, 参考实现同账号空 5/8; 思考判据要挂推演型提示词加该模型最高档, 挂复述轮必然抖动 (postmortems/009)
+- 清单查找要剥任意渠道前缀 -> 宿主注册 id 形如 `<plugin>/<model>`, 清单存裸 id; 按固定插件前缀剥离会让换插件后整个清单查不到, 思考与深度判据被跳过, 表现成一堆 PASS 但实际上关键判据没跑 (postmortems/009)
 - 上游只接受流式请求 -> 发 `stream:false` 得到 `400 code 11101`, 宿主据此把凭据标成不可用, 冷却期内连流式一起 `503 auth_unavailable`, 一次非流式调用就能打瘫整条渠道; 非流式必须由插件驱动上游流式端点再聚合
 - 宿主给每段载荷补 `data:` 前缀 -> 插件交出去的必须是裸 JSON, 交整行会得到 `data: data: {...}`, 官方 SDK 直接 `JSONDecodeError`
 - 冷却不是永久故障 -> 凭据不可用后有 `next_retry_after`, 约一分钟自愈, 重启宿主立即清除; 冷却期失败不能当功能失败
