@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"debug/elf"
+	"debug/macho"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -78,7 +79,6 @@ func main() {
 		os.Exit(1)
 	}
 
-
 	reg, err := loadRegistry(registrySource)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAILED to load registry: %v\n", err)
@@ -124,7 +124,7 @@ func main() {
 					fmt.Fprintf(os.Stderr, "  FAILED for %s/%s: %v\n", artifact.GOOS, artifact.GOARCH, err)
 					failedCount++
 				} else {
-					fmt.Printf("  Artifact %s/%s: PASSED (SHA256 verified, ELF valid)\n", artifact.GOOS, artifact.GOARCH)
+					fmt.Printf("  Artifact %s/%s: PASSED (SHA256 verified, library format valid)\n", artifact.GOOS, artifact.GOARCH)
 				}
 			}
 		} else {
@@ -157,8 +157,17 @@ func main() {
 func loadRegistry(source string) (Registry, error) {
 	var body []byte
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+		// 强制不使用 gzip 协商: raw.githubusercontent 对压缩与非压缩两个变体分别缓存,
+		// 压缩变体更新滞后, 刚推送完会取到过期副本, 表现为清单里的哈希凭空消失, 看起来
+		// 像真实缺陷。实测时间戳查询参数无法绕开该缓存, 只有 identity 变体是即时的。
+		request, errRequest := http.NewRequest(http.MethodGet, source, nil)
+		if errRequest != nil {
+			return Registry{}, fmt.Errorf("build request: %w", errRequest)
+		}
+		request.Header.Set("Accept-Encoding", "identity")
+
 		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Get(source)
+		resp, err := client.Do(request)
 		if err != nil {
 			return Registry{}, fmt.Errorf("fetch URL: %w", err)
 		}
@@ -219,53 +228,105 @@ func verifyDirectArtifact(client *http.Client, pluginID string, artifact Artifac
 		return fmt.Errorf("open zip: %w", err)
 	}
 
-	expectedSOName := pluginID + ".so"
-	var soFile *zip.File
+	extension := platformExtension(artifact.GOOS)
+	var libraryFile *zip.File
 	for _, f := range zipReader.File {
-		if f.Name == expectedSOName {
-			soFile = f
+		name := f.Name
+		if !strings.HasSuffix(name, extension) {
+			continue
+		}
+		// 宿主要求包内只有一个根级动态库, 名为 <id><扩展名> 或 <id>-v<版本><扩展名>
+		if name == pluginID+extension || strings.HasPrefix(name, pluginID+"-v") {
+			libraryFile = f
 			break
 		}
 	}
 
-	if soFile == nil {
-		return fmt.Errorf("%s not found in zip archive", expectedSOName)
+	if libraryFile == nil {
+		return fmt.Errorf("%s%s or %s-v<version>%s not found in zip archive", pluginID, extension, pluginID, extension)
 	}
 
-	soReader, err := soFile.Open()
+	libraryReader, err := libraryFile.Open()
 	if err != nil {
-		return fmt.Errorf("open so inside zip: %w", err)
+		return fmt.Errorf("open library inside zip: %w", err)
 	}
-	defer soReader.Close()
+	defer libraryReader.Close()
 
-	soBytes, err := io.ReadAll(soReader)
+	libraryBytes, err := io.ReadAll(libraryReader)
 	if err != nil {
-		return fmt.Errorf("read so inside zip: %w", err)
+		return fmt.Errorf("read library inside zip: %w", err)
 	}
 
-	elfFile, err := elf.NewFile(bytes.NewReader(soBytes))
-	if err != nil {
-		return fmt.Errorf("invalid ELF format: %w", err)
-	}
-	defer elfFile.Close()
+	return verifyLibraryFormat(artifact.GOOS, artifact.GOARCH, libraryBytes)
+}
 
-	if elfFile.Type != elf.ET_DYN {
-		return fmt.Errorf("ELF type is %v, expected ET_DYN (shared library)", elfFile.Type)
-	}
+// verifyLibraryFormat 按目标平台校验动态库格式, 与宿主的扩展名约定保持一致。
+// 只支持单个平台产物会被漏掉 mac, 而本机正是 darwin, 因此两种格式都要认。
+func verifyLibraryFormat(goos, goarch string, data []byte) error {
+	switch strings.ToLower(strings.TrimSpace(goos)) {
+	case "linux":
+		elfFile, err := elf.NewFile(bytes.NewReader(data))
+		if err != nil {
+			return fmt.Errorf("invalid ELF format: %w", err)
+		}
+		defer elfFile.Close()
 
-	var expectedMachine elf.Machine
-	switch artifact.GOARCH {
-	case "amd64":
-		expectedMachine = elf.EM_X86_64
-	case "arm64":
-		expectedMachine = elf.EM_AARCH64
+		if elfFile.Type != elf.ET_DYN {
+			return fmt.Errorf("ELF type is %v, expected ET_DYN (shared library)", elfFile.Type)
+		}
+
+		var expectedMachine elf.Machine
+		switch goarch {
+		case "amd64":
+			expectedMachine = elf.EM_X86_64
+		case "arm64":
+			expectedMachine = elf.EM_AARCH64
+		default:
+			expectedMachine = elf.EM_NONE
+		}
+
+		if elfFile.Machine != expectedMachine {
+			return fmt.Errorf("ELF machine architecture mismatch: got %v, want %v", elfFile.Machine, expectedMachine)
+		}
+		return nil
+
+	case "darwin":
+		machoFile, err := macho.NewFile(bytes.NewReader(data))
+		if err != nil {
+			return fmt.Errorf("invalid Mach-O format: %w (fat binary 需另行处理)", err)
+		}
+		defer machoFile.Close()
+
+		if machoFile.Type != macho.TypeDylib {
+			return fmt.Errorf("Mach-O type is %v, expected dylib", machoFile.Type)
+		}
+
+		var expectedCPU macho.Cpu
+		switch goarch {
+		case "amd64":
+			expectedCPU = macho.CpuAmd64
+		case "arm64":
+			expectedCPU = macho.CpuArm64
+		}
+
+		if expectedCPU != 0 && machoFile.Cpu != expectedCPU {
+			return fmt.Errorf("Mach-O CPU mismatch: got %v, want %v", machoFile.Cpu, expectedCPU)
+		}
+		return nil
+
 	default:
-		expectedMachine = elf.EM_NONE
+		// 其它平台只校验哈希, 不做格式判定
+		return nil
 	}
+}
 
-	if elfFile.Machine != expectedMachine {
-		return fmt.Errorf("ELF machine architecture mismatch: got %v, want %v", elfFile.Machine, expectedMachine)
+func platformExtension(goos string) string {
+	switch strings.ToLower(strings.TrimSpace(goos)) {
+	case "darwin", "mac", "macos", "osx":
+		return ".dylib"
+	case "windows":
+		return ".dll"
+	default:
+		return ".so"
 	}
-
-	return nil
 }
