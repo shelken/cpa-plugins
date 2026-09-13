@@ -120,3 +120,44 @@ jobs:
             assets/*.zip
             assets/checksums.txt
           generate_release_notes: true
+
+  record:
+    name: Record Artifact Hashes
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Download release assets and record hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PLUGIN_ID="${TAG%%/*}"
+          RAW_VERSION="${TAG##*/}"
+          VERSION="${RAW_VERSION#v}"
+
+          gh release download "${PLUGIN_ID}/v${VERSION}" --pattern '*.zip' --dir dist
+          go run scripts/release.go record --plugin "${PLUGIN_ID}" --dist dist
+
+          if git diff --quiet "plugins/${PLUGIN_ID}/plugin.json" registry.json; then
+            echo "两个文件均无变化，跳过提交"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "plugins/${PLUGIN_ID}/plugin.json" registry.json
+            git commit -m "chore(release): 回填 ${PLUGIN_ID} ${VERSION} 真实产物哈希"
+            git pull --rebase origin main
+            git push origin main
+          fi

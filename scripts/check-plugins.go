@@ -8,11 +8,11 @@ package main
 //
 // 用法:
 //
-//	go run scripts/check-plugins.go [--strict] [--release-ready]
+//	go run scripts/check-plugins.go [--strict] [--release-ready] [--changesets-base <ref>]
 //
-//	--strict         把 WARN 也视为失败
-//	--release-ready  发布门禁: 未回填 sha256 视为失败
-//
+//	--strict                把 WARN 也视为失败
+//	--release-ready         发布门禁: 未回填 sha256 视为失败
+//	--changesets-base <ref> 基准 ref: 检查有改动的插件是否包含新增变更集
 // 退出码 0 表示通过, 1 表示存在失败项。
 
 import (
@@ -56,10 +56,14 @@ var (
 func main() {
 	strict := flag.Bool("strict", false, "把 WARN 也视为失败")
 	releaseReady := flag.Bool("release-ready", false, "发布门禁: 未回填 sha256 视为失败")
+	changesetsBase := flag.String("changesets-base", "", "基准 ref: 检查有改动的插件是否包含新增变更集")
 	flag.Parse()
 
 	r := &report{}
 
+	if *changesetsBase != "" {
+		checkChangesets(r, *changesetsBase)
+	}
 	pluginDirs := discoverPluginDirs(r)
 	matrix := readWorkflowMatrix(r)
 
@@ -291,5 +295,72 @@ func registryInSync(r *report) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		r.fail("registry.json 与插件清单不同步: %s", strings.TrimSpace(string(output)))
+	}
+}
+
+func checkChangesets(r *report, baseRef string) {
+	if _, err := exec.LookPath("git"); err != nil {
+		r.fail("git 不可用: %v", err)
+		return
+	}
+
+	revisionRange := fmt.Sprintf("%s...HEAD", baseRef)
+
+	cmdACMR := exec.Command("git", "diff", "--name-only", "--diff-filter=ACMR", revisionRange)
+	outACMR, err := cmdACMR.CombinedOutput()
+	if err != nil {
+		r.fail("解析 ref %q 失败: %s", baseRef, strings.TrimSpace(string(outACMR)))
+		return
+	}
+
+	cmdA := exec.Command("git", "diff", "--name-only", "--diff-filter=A", revisionRange)
+	outA, err := cmdA.CombinedOutput()
+	if err != nil {
+		r.fail("获取新增文件失败 (ref %q): %s", baseRef, strings.TrimSpace(string(outA)))
+		return
+	}
+
+	pluginsWithChanges := map[string]bool{}
+	for _, line := range strings.Split(string(outACMR), "\n") {
+		path := filepath.ToSlash(strings.TrimSpace(line))
+		if path == "" || !strings.HasPrefix(path, "plugins/") {
+			continue
+		}
+		rest := strings.TrimPrefix(path, "plugins/")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 2 {
+			continue
+		}
+		pluginID := parts[0]
+		if len(parts) >= 3 && parts[1] == "changesets" {
+			continue
+		}
+		pluginsWithChanges[pluginID] = true
+	}
+
+	pluginsWithNewChangeset := map[string]bool{}
+	for _, line := range strings.Split(string(outA), "\n") {
+		path := filepath.ToSlash(strings.TrimSpace(line))
+		if path == "" || !strings.HasPrefix(path, "plugins/") {
+			continue
+		}
+		rest := strings.TrimPrefix(path, "plugins/")
+		parts := strings.Split(rest, "/")
+		if len(parts) >= 3 && parts[1] == "changesets" && strings.HasSuffix(parts[len(parts)-1], ".json") {
+			pluginID := parts[0]
+			pluginsWithNewChangeset[pluginID] = true
+		}
+	}
+
+	sortedPlugins := make([]string, 0, len(pluginsWithChanges))
+	for id := range pluginsWithChanges {
+		sortedPlugins = append(sortedPlugins, id)
+	}
+	sort.Strings(sortedPlugins)
+
+	for _, id := range sortedPlugins {
+		if !pluginsWithNewChangeset[id] {
+			r.fail("插件 %s 有代码改动却未新增变更集 (plugins/%s/changesets/*.json)", id, id)
+		}
 	}
 }

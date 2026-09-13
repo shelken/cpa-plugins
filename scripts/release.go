@@ -7,13 +7,13 @@ package main
 // 打包阶段暴露, 而不是等用户装不上才发现。
 //
 // 用法:
+//	go run scripts/release.go version --plugin <id>
+//	go run scripts/release.go pack    --plugin <id> [--version <v>] [--out dist]
+//	go run scripts/release.go record  --plugin <id> [--dist dist]
 //
-//	go run scripts/release.go pack   --plugin <id> [--version <v>] [--out dist]
-//	go run scripts/release.go record --plugin <id> [--dist dist]
-//
-// pack   构建当前平台动态库, 打成宿主契约命名的 zip, 打印 sha256 与 size。
-// record 读取 dist 下已有 zip, 把 sha256 回填进 plugin.json, 再重建 registry.json。
-//
+// version 消费变更集, 计算并更新 plugin.json 版本与产物地址, 同步 Go 版本字面量。
+// pack    构建当前平台动态库, 打成宿主契约命名的 zip, 打印 sha256 与 size。
+// record  读取 dist 下已有 zip, 把 sha256 回填进 plugin.json, 再重建 registry.json。
 // 推荐发布流程。哈希必须来自**真实上传的产物**, 否则安装时报 checksum mismatch:
 //
 //	go run scripts/check-plugins.go --release-ready          # 发布前门禁
@@ -39,8 +39,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -61,6 +63,226 @@ func platformExtension(goos string) string {
 // archiveName 与宿主 internal/pluginstore 的 ArchiveName 保持一致
 func archiveName(id, version, goos, goarch string) string {
 	return fmt.Sprintf("%s_%s_%s_%s.zip", id, version, goos, goarch)
+}
+var reGoVersionLiteral = regexp.MustCompile(`(\bVersion:\s*)"([0-9]+\.[0-9]+\.[0-9]+[^"]*)"`)
+
+// ---------------- 变更集 ----------------
+
+type changeset struct {
+	Bump string `json:"bump"`
+	Note string `json:"note"`
+}
+
+const (
+	bumpRankNone  = 0
+	bumpRankPatch = 1
+	bumpRankMinor = 2
+	bumpRankMajor = 3
+)
+
+func parseBumpRank(bump string) (int, error) {
+	switch strings.TrimSpace(bump) {
+	case "patch":
+		return bumpRankPatch, nil
+	case "minor":
+		return bumpRankMinor, nil
+	case "major":
+		return bumpRankMajor, nil
+	default:
+		return bumpRankNone, fmt.Errorf("非法的 bump 值 %q (仅支持 patch, minor, major)", bump)
+	}
+}
+
+func bumpVersion(current, bump string) (string, error) {
+	v := strings.TrimPrefix(current, "v")
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("版本号 %q 不符合 x.y.z 语义化版本格式", current)
+	}
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(parts[1])
+	patch, err3 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil || err3 != nil || major < 0 || minor < 0 || patch < 0 {
+		return "", fmt.Errorf("版本号 %q 包含非法数字", current)
+	}
+
+	switch bump {
+	case "major":
+		return fmt.Sprintf("%d.0.0", major+1), nil
+	case "minor":
+		return fmt.Sprintf("%d.%d.0", major, minor+1), nil
+	case "patch":
+		return fmt.Sprintf("%d.%d.%d", major, minor, patch+1), nil
+	default:
+		return "", fmt.Errorf("未知的 bump 类型: %s", bump)
+	}
+}
+
+// ---------------- 任务: version ----------------
+
+func runVersion(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ExitOnError)
+	pluginID := fs.String("plugin", "", "插件 id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*pluginID) == "" {
+		fs.Usage()
+		return fmt.Errorf("必须指定 --plugin")
+	}
+	id := strings.TrimSpace(*pluginID)
+
+	changesetsDir := filepath.Join("plugins", id, "changesets")
+	dirInfo, err := os.Stat(changesetsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("变更集目录不存在: %s", changesetsDir)
+		}
+		return fmt.Errorf("访问变更集目录失败: %w", err)
+	}
+	if !dirInfo.IsDir() {
+		return fmt.Errorf("变更集路径不是目录: %s", changesetsDir)
+	}
+
+	changesetFiles, err := filepath.Glob(filepath.Join(changesetsDir, "*.json"))
+	if err != nil {
+		return fmt.Errorf("扫描变更集文件失败: %w", err)
+	}
+	if len(changesetFiles) == 0 {
+		return fmt.Errorf("变更集目录中没有 json 文件: %s", changesetsDir)
+	}
+
+	maxRank := bumpRankNone
+	for _, csPath := range changesetFiles {
+		data, err := os.ReadFile(csPath)
+		if err != nil {
+			return fmt.Errorf("读取变更集 %s 失败: %w", csPath, err)
+		}
+		var cs changeset
+		if err := json.Unmarshal(data, &cs); err != nil {
+			return fmt.Errorf("解析变更集 %s 失败: %w", csPath, err)
+		}
+		rank, err := parseBumpRank(cs.Bump)
+		if err != nil {
+			return fmt.Errorf("变更集 %s: %w", csPath, err)
+		}
+		if rank > maxRank {
+			maxRank = rank
+		}
+	}
+
+	var highestBump string
+	switch maxRank {
+	case bumpRankPatch:
+		highestBump = "patch"
+	case bumpRankMinor:
+		highestBump = "minor"
+	case bumpRankMajor:
+		highestBump = "major"
+	default:
+		return fmt.Errorf("未解析到有效的 bump 级别")
+	}
+
+	manifestPath := filepath.Join("plugins", id, "plugin.json")
+	manifest, err := readPluginManifest(manifestPath)
+	if err != nil {
+		return fmt.Errorf("读取 plugin.json 失败: %w", err)
+	}
+	currentVersion := manifestString(manifest, "version")
+	if currentVersion == "" {
+		return fmt.Errorf("plugin.json 缺少 version")
+	}
+
+	nextVersion, err := bumpVersion(currentVersion, highestBump)
+	if err != nil {
+		return fmt.Errorf("计算新版本号失败: %w", err)
+	}
+
+	goFiles, err := filepath.Glob(filepath.Join("plugins", id, "*.go"))
+	if err != nil {
+		return fmt.Errorf("扫描 Go 源文件失败: %w", err)
+	}
+	if len(goFiles) == 0 {
+		return fmt.Errorf("在 plugins/%s/ 下未找到任何 .go 文件", id)
+	}
+
+	totalHits := 0
+	var targetFile string
+	var targetContent string
+
+	for _, goFile := range goFiles {
+		data, err := os.ReadFile(goFile)
+		if err != nil {
+			return fmt.Errorf("读取 %s 失败: %w", goFile, err)
+		}
+		content := string(data)
+		matches := reGoVersionLiteral.FindAllStringIndex(content, -1)
+		if len(matches) > 0 {
+			totalHits += len(matches)
+			targetFile = goFile
+			targetContent = content
+		}
+	}
+
+	if totalHits == 0 {
+		return fmt.Errorf("在 plugins/%s/*.go 中未找到 Version: \"x.y.z\" 版本字面量", id)
+	}
+	if totalHits > 1 {
+		return fmt.Errorf("在 plugins/%s/*.go 中匹配 Version: \"x.y.z\" 命中 %d 处, 期望恰好 1 处", id, totalHits)
+	}
+
+	// 1. 同步 Go 代码中的版本字面量
+	newGoContent := reGoVersionLiteral.ReplaceAllString(targetContent, "${1}\""+nextVersion+"\"")
+	if err := os.WriteFile(targetFile, []byte(newGoContent), 0o644); err != nil {
+		return fmt.Errorf("更新 %s 失败: %w", targetFile, err)
+	}
+
+	// 2. 更新 plugin.json: version 与 artifacts[].url 重算, sha256 置空, size 置 0
+	manifest["version"] = nextVersion
+	install, ok := manifest["install"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("plugin.json 缺少 install 段")
+	}
+	rawArtifacts, ok := install["artifacts"].([]any)
+	if !ok || len(rawArtifacts) == 0 {
+		return fmt.Errorf("plugin.json 的 install.artifacts 为空")
+	}
+	for _, raw := range rawArtifacts {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("artifacts 条目不是对象")
+		}
+		goos, _ := entry["goos"].(string)
+		goarch, _ := entry["goarch"].(string)
+		if goos == "" || goarch == "" {
+			return fmt.Errorf("artifact 缺少 goos 或 goarch")
+		}
+		entry["url"] = fmt.Sprintf("https://github.com/shelken/cpa-plugins/releases/download/%s%%2Fv%s/%s",
+			id, nextVersion, archiveName(id, nextVersion, goos, goarch))
+		entry["sha256"] = ""
+		entry["size"] = json.Number("0")
+	}
+
+	encoded, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化 plugin.json 失败: %w", err)
+	}
+	if err := os.WriteFile(manifestPath, append(encoded, '\n'), 0o644); err != nil {
+		return fmt.Errorf("写入 %s 失败: %w", manifestPath, err)
+	}
+
+	// 3. 删除已消费的变更集文件
+	for _, csPath := range changesetFiles {
+		if err := os.Remove(csPath); err != nil {
+			return fmt.Errorf("删除变更集文件 %s 失败: %w", csPath, err)
+		}
+	}
+
+	// 4. stdout 打印新版本与 tag 供人复制; 不执行任何 git 命令
+	tag := fmt.Sprintf("%s/v%s", id, nextVersion)
+	fmt.Printf("新版本: %s\n", nextVersion)
+	fmt.Printf("标签: %s\n", tag)
+	return nil
 }
 
 // ---------------- plugin.json ----------------
@@ -392,14 +614,17 @@ func fileDigest(path string) (string, int64, error) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "用法: go run scripts/release.go <pack|record> [选项]\n\n")
-		fmt.Fprintf(os.Stderr, "  pack   --plugin <id> [--version <v>] [--out dist]\n")
-		fmt.Fprintf(os.Stderr, "  record --plugin <id> [--dist dist] [--skip-registry]\n")
+		fmt.Fprintf(os.Stderr, "用法: go run scripts/release.go <version|pack|record> [选项]\n\n")
+		fmt.Fprintf(os.Stderr, "  version --plugin <id>\n")
+		fmt.Fprintf(os.Stderr, "  pack    --plugin <id> [--version <v>] [--out dist]\n")
+		fmt.Fprintf(os.Stderr, "  record  --plugin <id> [--dist dist] [--skip-registry]\n")
 		os.Exit(2)
 	}
 
 	var err error
 	switch os.Args[1] {
+	case "version":
+		err = runVersion(os.Args[2:])
 	case "pack":
 		err = runPack(os.Args[2:])
 	case "record":

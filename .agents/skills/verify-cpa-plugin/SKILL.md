@@ -73,10 +73,19 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 
 仓库内置维护工具：
 
-- `scripts/management-api.go`：管理面单点交互工具，自动由 `sec-run` 注入 `CPA_TOKEN` 执行鉴权
-- `scripts/dev-sandbox.go`：端到端沙箱启动与多项断言套件
+- `scripts/management-api.go`：管理面单点交互工具，自动由 `sec-run` 注入 `CPA_TOKEN` 执行鉴权，响应里的密钥与凭据字段默认打码
+- `scripts/verify-chat.go`：对话链路验收入口，一次跑完流式帧合规、思维链、上下文记忆、缓存命中、思考深度与非流式聚合
+- `scripts/dev-sandbox.go`：端到端沙箱启动与多项断言套件，只覆盖装载与报送，替代不了真机对话验收
 - `scripts/check-plugins.go`：检查仓库清单、构建矩阵、声明平台一致性
 - `scripts/verify-registry-install.go`：在线拉取已发布产物校验哈希与动态库 ELF、Mach-O 格式
+
+## 刚发布的产物怎么读
+
+`raw.githubusercontent.com` 上的 `registry.json` 走 CDN，推送后可能仍返回上一版，表现为清单里的 `version` 已是新版而 `sha256` 还是旧值。此时
+
+- 要权威内容就直接读仓库，`gh api repos/<owner>/<repo>/contents/registry.json --jq .content | base64 -d`
+- 要校验刚发布的产物就加 `-local` 对本地 `registry.json` 跑 `verify-registry-install.go`
+- 要装到宿主就直接触发安装并看响应，宿主自己会拉到新鲜内容
 
 ## 特性地图
 
