@@ -324,6 +324,7 @@ func (s *sandbox) assert() error {
 	if err := s.assertModels(); err != nil {
 		return err
 	}
+	s.reportConfigFields()
 	s.reportQuotaProvider()
 	return nil
 }
@@ -420,6 +421,39 @@ func (s *sandbox) reportQuotaProvider() {
 	}
 	fmt.Println("[i] 额度提供方列表不含本插件 (未实现 QuotaProvider 时属正常)")
 }
+func (s *sandbox) reportConfigFields() {
+	body, status, err := s.httpGet("/v0/management/plugins", true)
+	if err != nil || status != http.StatusOK {
+		return
+	}
+	var resp struct {
+		Plugins []struct {
+			ID           string `json:"id"`
+			ConfigFields []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			} `json:"config_fields"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		return
+	}
+	for _, p := range resp.Plugins {
+		if p.ID == s.pluginID {
+			if len(p.ConfigFields) > 0 {
+				names := make([]string, 0, len(p.ConfigFields))
+				for _, f := range p.ConfigFields {
+					names = append(names, f.Name)
+				}
+				fmt.Printf("[+] 断言通过: 管理面返回 %d 个配置字段: %s\n", len(p.ConfigFields), strings.Join(names, ", "))
+			} else {
+				fmt.Println("[i] 管理面未返回可视化配置字段 (config_fields 为空)")
+			}
+			return
+		}
+	}
+}
+
 
 func (s *sandbox) httpGet(path string, management bool) (string, int, error) {
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", s.port, path)
