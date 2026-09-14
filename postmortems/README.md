@@ -9,3 +9,5 @@
 - [007 · 验证信号与写入点分离诱发空提交事故](./007-quota-release-badge-vs-target-state.md)
 - [008 · 沙箱管理面取钥链路断裂与验证口径虚报](./008-sandbox-management-key-break.md)
 - [009 · 拿复述型提示词判思考输出](./009-cot-judgement-wrong-anchor.md)
+- [010 · 功能分支内合并主干](./010-feature-branch-merged-upstream.md)
+- [011 · 产物未发布就去做生产验证](./011-prod-verification-before-release.md)
