@@ -7,3 +7,5 @@
 - [005 · verify-chat 按带前缀模型 id 查清单 miss](./005-verify-chat-manifest-lookup-prefix-miss.md)
 - [006 · 注释声明被测试钉死成错误形状](./006-quota-comment-vs-capture-drift.md)
 - [007 · 验证信号与写入点分离诱发空提交事故](./007-quota-release-badge-vs-target-state.md)
+- [008 · 沙箱管理面取钥链路断裂与验证口径虚报](./008-sandbox-management-key-break.md)
+- [009 · 拿复述型提示词判思考输出](./009-cot-judgement-wrong-anchor.md)

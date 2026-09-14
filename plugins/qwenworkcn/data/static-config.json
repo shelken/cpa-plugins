@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 2,
+  "provenance": {
+    "captureUserAgent": "QwenWork/0.1.8 cosy/1.1.18",
+    "generatedAt": "2026-09-13T20:41:43.922Z",
+    "generator": "export-cpa-static.ts",
+    "modelsSource": "model-cache",
+    "modelCacheFetchedAt": "2026-09-13T18:47:49.136Z"
+  },
+  "endpoints": {
+    "baseUrl": "https://gateway.qwenwork.cn",
+    "chatCompletions": "/algo/api/v2/service/pro/sse/agent_chat_generation",
+    "chatQuery": "FetchKeys=llm_model_result&AgentId=agent_common&Encode=1",
+    "deviceTokenPoll": "/api/v1/deviceToken/poll",
+    "deviceTokenRefresh": "/api/v1/deviceToken/refresh",
+    "userinfo": "/api/v1/userinfo",
+    "quotaUsage": "/api/v2/quota/usage"
+  },
+  "webOrigin": "https://qwenwork.cn",
+  "profile": {
+    "clientId": "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb",
+    "redirectUri": "qwenwork-cn://",
+    "cosyVersion": "1.1.18",
+    "headers": {
+      "chat": {
+        "Accept": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "Cosy-Business-Product": "qoder_work",
+        "Cosy-Business-Type": "agent",
+        "Cosy-ClientType": "6",
+        "Cosy-Data-Policy": "disagree",
+        "Cosy-MachineOS": "aarch64_darwin",
+        "Cosy-MachineType": "5",
+        "Cosy-Scene": "qwork",
+        "Cosy-Version": "1.1.18",
+        "Login-Version": "v2",
+        "User-Agent": "node",
+        "X-Model-Key": "{{modelKey}}",
+        "X-Model-Source": "{{modelSource}}"
+      },
+      "base": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Cosy-Business-Product": "qoder_work",
+        "Cosy-Business-Type": "agent",
+        "Cosy-ClientType": "6",
+        "Cosy-Data-Policy": "disagree",
+        "Cosy-MachineOS": "aarch64_darwin",
+        "Cosy-MachineType": "5",
+        "Cosy-Scene": "qwork",
+        "Cosy-Version": "1.1.18",
+        "Login-Version": "v2",
+        "User-Agent": "node"
+      },
+      "openApi": {
+        "Accept": "application/json",
+        "Authorization": "Bearer {{deviceToken}}",
+        "Content-Type": "application/json",
+        "User-Agent": "qoderwork/1.1.18"
+      },
+      "web": {
+        "Accept": "application/json",
+        "Authorization": "Bearer {{deviceToken}}",
+        "User-Agent": "qoderwork/1.1.18"
+      },
+      "login.poll": {
+        "Accept": "application/json",
+        "sec-fetch-site": "none",
+        "sec-fetch-mode": "no-cors",
+        "sec-fetch-dest": "empty",
+        "priority": "u=4, i",
+        "User-Agent": "{{userAgent}}"
+      },
+      "login.refresh": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "{{userAgent}}"
+      },
+      "login.userinfo": {
+        "Accept": "application/json",
+        "Authorization": "Bearer {{deviceToken}}",
+        "Cosy-ClientType": "{{clientType}}",
+        "Cosy-MachineId": "{{machineId}}",
+        "Cosy-MachineToken": "{{deviceToken}}",
+        "Login-Version": "v2",
+        "User-Agent": "qoderwork/1.1.18"
+      }
+    }
+  },
+  "models": [
+    {
+      "id": "pro",
+      "name": "高级",
+      "displayName": "高级",
+      "ownedBy": "qwenworkcn",
+      "contextLength": 1000000,
+      "maxCompletionTokens": 128000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultReasoningEffort": "high"
+    },
+    {
+      "id": "flash",
+      "name": "标准",
+      "displayName": "标准",
+      "ownedBy": "qwenworkcn",
+      "contextLength": 1000000,
+      "maxCompletionTokens": 128000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultReasoningEffort": "high"
+    },
+    {
+      "id": "qwen3.8-max-preview",
+      "name": "Qwen3.8-Max",
+      "displayName": "Qwen3.8-Max",
+      "ownedBy": "qwenworkcn",
+      "contextLength": 1000000,
+      "maxCompletionTokens": 128000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultReasoningEffort": "high"
+    }
+  ]
+}

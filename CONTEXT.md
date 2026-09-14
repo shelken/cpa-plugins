@@ -47,3 +47,15 @@ _Avoid_: Auth mode, login type, credential source
 **Manifest Provenance**:
 溯源字段，标记静态清单由哪次真实客户端抓包生成、何时生成的，供校验清单未被手改。
 _Avoid_: manifest metadata, capture stamp
+
+**Cosy Signature**:
+Aliyun's proprietary protocol encryption and signing scheme for QwenWork, combining custom Base64 encoding, EndSwap permutation, raw RSA-1024 encryption, AES-128-CBC encryption, and 5-segment MD5 authorization headers.
+_Avoid_: Aliyun sign, Qwen auth hash, custom TLS
+
+**Device Flow**:
+An authorization flow where the user authorizes the application in a standard web browser using PKCE and a device code/nonce, while the plugin polls for token issuance.
+_Avoid_: Web OAuth, QR login, password grant
+
+**Wallet-Primary Quota**:
+A quota resolution strategy prioritizing active wallet balances over package usage when the upstream usage endpoint returns null or unallocated packages.
+_Avoid_: Mock balance, fallback credits, virtual quota

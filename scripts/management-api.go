@@ -24,12 +24,33 @@ func main() {
 	method := flag.String("method", http.MethodGet, "请求方法")
 	body := flag.String("body", "", "请求体")
 	auth := flag.String("auth", "management", "鉴权身份: management 用管理密钥, client 用就地取得的客户端密钥")
+	tokenFile := flag.String("token-file", "", "管理密钥文件路径 (本地沙箱 per-run key), 设置时优先于 sec-run")
+	bodyFile := flag.String("body-file", "", "请求体文件路径, 设置时优先于 -body")
 	flag.Parse()
+	if *bodyFile != "" {
+		raw, errRead := os.ReadFile(*bodyFile)
+		if errRead != nil {
+			fmt.Fprintf(os.Stderr, "[-] 读取 body-file 失败: %v\n", errRead)
+			os.Exit(2)
+		}
+		*body = string(raw)
+	}
 
-	managementToken, err := secRun("CPA_TOKEN")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[-] 未能隐式读取管理密钥: %v, 不发请求\n", err)
-		os.Exit(3)
+	managementToken := ""
+	if *tokenFile != "" {
+		raw, errRead := os.ReadFile(*tokenFile)
+		if errRead != nil {
+			fmt.Fprintf(os.Stderr, "[-] 读取 token-file 失败: %v\n", errRead)
+			os.Exit(3)
+		}
+		managementToken = "Bearer " + strings.TrimSpace(string(raw))
+	} else {
+		token, err := secRun("CPA_TOKEN")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] 未能隐式读取管理密钥: %v, 不发请求\n", err)
+			os.Exit(3)
+		}
+		managementToken = token
 	}
 
 	headerValue := managementToken

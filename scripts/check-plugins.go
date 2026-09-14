@@ -369,7 +369,8 @@ func checkChangesets(r *report, baseRef string) {
 		// 变更集也可能在提交前就被 version 子命令消费掉了(本仓直接提交 main 的流程),
 		// 此时 plugin.json 的版本变化就是留下了版本意图的证据。
 		before, after := manifestVersionAt(mergeBase, id), manifestVersionAt("HEAD", id)
-		if before != "" && after != "" && before != after {
+		// 新增或删除的插件没有可对比的旧版本: 新增时清单里的初始版本即版本意图, 删除不需要版本。
+		if before == "" || after == "" || before != after {
 			continue
 		}
 		r.fail("插件 %s 有改动却未留下版本意图: 新增 plugins/%s/changesets/<名字>.json 并跑 release.go version, 或先提交变更集", id, id)
