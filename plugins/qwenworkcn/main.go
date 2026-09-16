@@ -312,7 +312,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			SchemaVersion: pluginabi.SchemaVersion,
 			Metadata: pluginapi.Metadata{
 				Name:             "QwenWork CN",
-				Version:          "0.1.0",
+				Version:          "0.1.2",
 				Author:           "shelken",
 				GitHubRepository: "https://github.com/shelken/cpa-plugins",
 				ConfigFields: []pluginapi.ConfigField{
