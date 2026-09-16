@@ -18,8 +18,10 @@ func TestParseManifestOK(t *testing.T) {
 	if len(m.Models) != 3 {
 		t.Fatalf("models = %d, want 3", len(m.Models))
 	}
-	if m.Profile.CosyVersion != "1.1.18" {
-		t.Fatalf("cosyVersion = %q", m.Profile.CosyVersion)
+	// 版本跟随数据刷新 (app-values --update → export-cpa-static), 断言数据驱动:
+	// profile.cosyVersion 与 chat 组渲染结果一致即可, 不钉具体版本号
+	if m.Profile.CosyVersion == "" {
+		t.Fatal("cosyVersion 为空")
 	}
 
 	// 已知值渲染: cosyVersion 已替换, 运行期变量保留
@@ -27,8 +29,8 @@ func TestParseManifestOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chat group: %v", err)
 	}
-	if chat["Cosy-Version"] != "1.1.18" {
-		t.Fatalf("chat Cosy-Version = %q, want rendered 1.1.18", chat["Cosy-Version"])
+	if chat["Cosy-Version"] != m.Profile.CosyVersion {
+		t.Fatalf("chat Cosy-Version = %q, want rendered %s", chat["Cosy-Version"], m.Profile.CosyVersion)
 	}
 	if chat["X-Model-Key"] != "{{modelKey}}" {
 		t.Fatalf("chat X-Model-Key = %q, want runtime var kept", chat["X-Model-Key"])

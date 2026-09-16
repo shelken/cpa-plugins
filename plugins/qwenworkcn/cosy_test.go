@@ -77,25 +77,27 @@ func TestRuntimeFromRawStable(t *testing.T) {
 
 func TestSignInferRequestFixed(t *testing.T) {
 	plain := `{"messages":[{"role":"user","content":"yo"}]}`
-	m, err := parseManifest(defaultStaticConfigBytes)
-	if err != nil {
-		t.Fatalf("parseManifest: %v", err)
+	// 金标向量只在 cosyVersion=1.1.18 下有效 (cosyVersion 进 Authorization p1 payload)。
+	// 显式固定, 不吃 manifest: 数据刷新 (版本跟随) 不应反复打断金标测试。
+	fixedCosyVersion := "1.1.18"
+	staticHeaders := map[string]string{
+		"Cosy-Version":          fixedCosyVersion,
+		"Cosy-Data-Policy":      "disagree",
+		"Cosy-ClientType":       "6",
+		"Cosy-Business-Product": "qoder_work",
+		"Cosy-Business-Type":    "agent",
+		"Cosy-Scene":            "qwork",
+		"Cosy-MachineOS":        "darwin",
+		"Cosy-MachineType":      "aarch64",
+		"X-Model-Key":           "qmodel_latest",
+		"X-Model-Source":        "system",
 	}
-
-	staticHeaders, err := m.RenderHeaderGroup("chat", map[string]string{
-		"modelKey":    "qmodel_latest",
-		"modelSource": "system",
-	})
-	if err != nil {
-		t.Fatalf("RenderHeaderGroup chat: %v", err)
-	}
-
 	out, err := signCosyRequest(SignInferInput{
 		Endpoint:      "https://gateway.qwenwork.cn",
 		MachineID:     "mid",
 		DeviceToken:   "DEVICE-TOKEN",
 		Body:          plain,
-		CosyVersion:   m.Profile.CosyVersion,
+		CosyVersion:   fixedCosyVersion,
 		StaticHeaders: staticHeaders,
 		User:          &SignInferUser{UID: "u9"},
 		RequestID:     fixedTestVectors.RequestID,

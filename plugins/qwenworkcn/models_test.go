@@ -16,9 +16,10 @@ func TestFilterAndMapModels(t *testing.T) {
 		t.Fatalf("models = %d, want 3", len(models))
 	}
 
+	// manifest 序即契约 (TS 导出按 id 排序); 首位断言数据驱动, 不钉具体模型名
 	first := models[0]
-	if first.ID != "qwenworkcn/pro" {
-		t.Fatalf("first ID = %q, want qwenworkcn/pro", first.ID)
+	if first.ID != "qwenworkcn/"+m.Models[0].ID {
+		t.Fatalf("first ID = %q, want qwenworkcn/%s", first.ID, m.Models[0].ID)
 	}
 	if first.OwnedBy != "qwenworkcn" {
 		t.Fatalf("ownedBy = %q", first.OwnedBy)
@@ -65,10 +66,10 @@ func TestFilterAndMapModelsAllThree(t *testing.T) {
 		t.Fatalf("parse manifest: %v", err)
 	}
 	models := filterAndMapModels(&PluginConfig{}, m.Models)
-	wantIDs := []string{"qwenworkcn/pro", "qwenworkcn/flash", "qwenworkcn/qwen3.8-max-preview"}
-	for i, want := range wantIDs {
-		if models[i].ID != want {
-			t.Fatalf("models[%d].ID = %q, want %q", i, models[i].ID, want)
+	// 顺序跟随 manifest (TS 导出按 id 排序); 验证前缀完整映射且无遗漏
+	for i, mm := range m.Models {
+		if models[i].ID != "qwenworkcn/"+mm.ID {
+			t.Fatalf("models[%d].ID = %q, want qwenworkcn/%s", i, models[i].ID, mm.ID)
 		}
 	}
 }
