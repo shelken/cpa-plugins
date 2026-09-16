@@ -38,6 +38,8 @@ git add plugins/<id> && git commit
 git tag <id>/v<X.Y.Z> && git push origin main <id>/v<X.Y.Z>
 ```
 
+多插件发版时标签逐个推送：等上一条流水线的 `record` 作业完成回填后，再推下一个标签，避免并发回填互相覆盖。
+
 标签版本号必须与 `plugin.json` 一致，否则产物地址指向不存在的资产。
 
 ## 5. CI 回填哈希
@@ -50,10 +52,12 @@ CI 绿后 `git pull origin main`，确认 `registry.json` 中该插件版本与�
 jq '.plugins[] | select(.id=="<id>") | .version, .install.artifacts[0].sha256' registry.json
 ```
 
-若 `record` 作业失败，本地补齐后提交推送：
+若 `record` 作业失败，在同一提交上重打标签触发全新流水线，由 CI 的 `record` 作业重新回填，禁止本地代填：
 
 ```bash
-go run scripts/release.go record --plugin <id> --dist dist
+git push origin :refs/tags/<id>/v<X.Y.Z>
+git tag -d <id>/v<X.Y.Z> && git tag <id>/v<X.Y.Z>
+git push origin <id>/v<X.Y.Z>
 ```
 
 ## 6. 线上验收
