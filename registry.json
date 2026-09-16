@@ -76,7 +76,7 @@
       "name": "QwenWork CN",
       "description": "QwenWork (Aliyun) Cosy Provider Plugin for CLIProxyAPI",
       "author": "shelken",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "repository": "https://github.com/shelken/cpa-plugins",
       "homepage": "https://github.com/shelken/cpa-plugins",
       "license": "MIT",
@@ -91,23 +91,23 @@
           {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "ca14b864eb9ac0d7e8e18b5ab28cfa526229827e8a9eb90aeea286931a3e1559",
-            "size": 2766403,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.0/qwenworkcn_0.1.0_darwin_arm64.zip"
+            "sha256": "256c17fa7b49544fb8b1bbc174f26946f505d9db373c4c719a821e2b47d9be8c",
+            "size": 2766385,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.2/qwenworkcn_0.1.2_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "c9c89ee7236fb53d36961b56f166c34be2b03b26f943c7557c22d3059f35b795",
-            "size": 5413918,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.0/qwenworkcn_0.1.0_linux_amd64.zip"
+            "sha256": "3badcb2376c4c8526b8e2cfe9140d2a0647da56861a200b008eeb3362672de32",
+            "size": 5413883,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.2/qwenworkcn_0.1.2_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "e626ae962ec465658e005e0a5318b5b7034931a30a1178c06d99dd5344c94757",
-            "size": 4903271,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.0/qwenworkcn_0.1.0_linux_arm64.zip"
+            "sha256": "760b4a640babbae3e11a28241b7bded357183dfe780b3fa68cec02499da8d819",
+            "size": 4903278,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.2/qwenworkcn_0.1.2_linux_arm64.zip"
           }
         ],
         "type": "direct"
@@ -118,7 +118,7 @@
       "name": "WorkBuddy",
       "description": "Tencent WorkBuddy / CodeBuddy Provider Plugin for CLIProxyAPI",
       "author": "shelken",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "repository": "https://github.com/shelken/cpa-plugins",
       "homepage": "https://github.com/shelken/cpa-plugins",
       "license": "MIT",
@@ -133,23 +133,23 @@
           {
             "goarch": "arm64",
             "goos": "darwin",
-            "sha256": "b4b5d6ac18bb9ae5489a9a91b3553e93cca1e76dbd66771a0120c5d40a5d9ec5",
-            "size": 2738114,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.0/workbuddy_0.2.0_darwin_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.2/workbuddy_0.2.2_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
-            "sha256": "532134e8541ccca1e912ee48256cfa7e78b6661dcb0bc10364d17d79a9765a3c",
-            "size": 5383675,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.0/workbuddy_0.2.0_linux_amd64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.2/workbuddy_0.2.2_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
-            "sha256": "fbb9871687962651003627017a8a7bebbcb710ac0d7c0e5f0f5038a61cd767a5",
-            "size": 4873808,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.0/workbuddy_0.2.0_linux_arm64.zip"
+            "sha256": "",
+            "size": 0,
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/workbuddy%2Fv0.2.2/workbuddy_0.2.2_linux_arm64.zip"
           }
         ],
         "type": "direct"
