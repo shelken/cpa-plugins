@@ -8,6 +8,10 @@
 - `auth-poll` 轮询会话状态直至用户完成手机授权
 - `auth-files-parse` 宿主解析凭据文件并标记渠道归属
 
+## 断言子集
+
+本特性无沙箱离线断言, 全部走下方 Driving it 的管理面接口。相关场景: 注入凭据后的真实对话 (`verify-chat.go -scenarios session`) 依赖本特性产出的 `status: active` 凭据; 改了凭据结构 (`ToStorageJSON` 字段) 后必须重跑该场景。
+
 ## How to get to it (user POV)
 
 - 管理界面凭据页选择渠道发起登录

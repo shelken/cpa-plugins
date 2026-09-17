@@ -13,6 +13,22 @@
 - `chat-tools` 工具定义透传, 模型返回 `tool_calls` 并消费工具结果
 - `chat-model` 只接受宿主报送过的模型 id
 
+## 场景与请求成本
+
+场景 id 由脚本的注册表 (`scenarioRegistry`) 声明, `verify-chat.go -list` 打印权威清单与每项请求成本, 不在此处复制。下表只补充脚本派不出来的语义: 每个场景覆盖哪些判据、何时该跑。
+
+| 场景 id | 覆盖的判据 | 何时该跑 |
+|---|---|---|
+| `session` | 流式帧合规、正文输出、上下文记忆、多轮缓存(轮次2/3)、用量上报 | 改了消息组装、会话头、请求体构造 |
+| `probe` | 重复请求缓存(二次)、用量上报 | 改了缓存相关字段、请求幂等性 |
+| `nonstream` | 非流式链路 | 改了流式聚合、`stream:false` 路径 |
+| `tools` | 工具调用 流式/非流式、工具结果消费 | 改了工具字段透传、分片拼接 |
+| `effort` | 思维链输出、思考深度传递 | 改了推理档位映射、`reasoning_effort` 传递 |
+
+默认 (不传 `-scenarios`) 只跑 `session,nonstream`: 二者成本最低且覆盖请求构造主路径。场景按注册顺序执行, 与书写顺序无关。
+
+**加场景**: 写一个 `func(s *session)` 跑请求并 `s.record(...)` 判据, 在 `scenarioRegistry` 注册一行。`-list`、成本合计、参数解析、调度自动跟随, 无需改 main, 也不要在此表外另抄一份清单。
+
 ## 判据
 
 `verify-chat.go` 一次跑完全部判据, 任一 FAIL 即对话链路不可用:
@@ -47,14 +63,25 @@ Preconditions:
 - 真实对话需要可用凭据 (`auth-files` 中目标渠道 `status` 为 `active`); 凭据可用性先于一切链路判断 (postmortems/003)
 - 密钥: 生产经 `sec-run`, 沙箱经 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key`
 
-- **跑全量判据。** 脚本按 `-manifest` 清单取该模型的档位声明, 逐项打印判据与结论, 有失败项退出码为 1:
+- **按场景跑判据。** 脚本只执行点名的场景, 未点名的判据不执行也不报绿, 退出码 1 表示有失败项:
   ```bash
-  go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> -manifest plugins/<id>/data/static-config.json
+  # 改了请求构造: 只跑主路径两个场景
+  go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> \
+    -manifest plugins/<id>/data/static-config.json -scenarios session,nonstream
+
+  # 改了工具透传或推理档位: 追加对应场景
+  go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> \
+    -manifest plugins/<id>/data/static-config.json -scenarios tools,effort
+
+  # 发布门禁 / 协议层改动: 全量
+  go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> \
+    -manifest plugins/<id>/data/static-config.json -scenarios all
   ```
+  `-manifest` 可省略, 默认按 `-model` 的插件段推导为 `plugins/<plugin>/data/static-config.json`
 
-- **工具调用已并入全量判据。** 无需手工发请求, 首轮带 `get_weather` 定义断言 `finish_reason:"tool_calls"` 与合法 `arguments`, 次轮带回调用与结果断言模型引用了结果
+- **工具调用是独立场景。** 无需手工发请求, 首轮带 `get_weather` 定义断言 `finish_reason:"tool_calls"` 与合法 `arguments`, 次轮带回调用与结果断言模型引用了结果; 只在点名 `-scenarios tools` 时执行
 
-- **跑构造层单测。** 不依赖上游凭据, 改动请求构造后先跑:
+- **跑构造层单测。** 不依赖上游凭据, 改动请求构造后先跑 (这是零成本, 不需要选场景):
   ```bash
   cd plugins/<id> && go test ./...
   ```

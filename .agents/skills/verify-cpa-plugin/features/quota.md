@@ -7,6 +7,18 @@
 - `quota-providers` 宿主识别具备额度查询能力的已注册插件
 - `quota-fetch` 通过管理接口拉取实时余额并返回格式化比例
 
+## 断言子集
+
+`dev-sandbox.go --checks quota` 只断言宿主识别到本插件的额度扩展点 (改了 QuotaProvider 注册后点名它):
+
+```bash
+go run scripts/dev-sandbox.go -plugin <id> -checks load,quota
+```
+
+真实余额数值必须走下方 Driving it 的 `quota/fetch`, 沙箱离线断言不覆盖。
+
+**判据陷阱**: `quota/fetch` 返回的 `remainingFraction` 会四舍五入到整包比例 (余额 99.5675/100 读作 `1`), 判断「额度有没有被消耗」必须读上游原始数值 (`/user/wallets` 的 `balance`), 不能看管理面文案。
+
 ## How to get to it (user POV)
 
 - 管理界面额度页查看各渠道余额与额度条

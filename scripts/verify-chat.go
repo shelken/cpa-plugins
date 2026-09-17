@@ -9,18 +9,194 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
 
-// 对话链路的验收入口。四项指标来自真实使用需求: 多轮缓存、上下文记忆、
-// 思考深度传递、思维链输出; 再加一项流式帧合规, 因为标准客户端读不懂就会直接报错。
+// 对话链路的验收入口。职责边界: 只驱动真实宿主的 /v1/chat/completions, 断言用户可见行为。
+// 装载与注册归 dev-sandbox.go, 仓库不变量归 check-plugins.go, 发布产物归 verify-registry-install.go。
+// 场景以注册表声明 (scenarioRegistry), 加场景 = 写一个 run 函数 + 注册一行, main 不随场景增长。
 //
 // 密钥纪律: 管理密钥只经 sec-run printenv CPA_TOKEN 读取, 客户端密钥由管理面就地取得,
 // 二者都不得出现在终端输出里, 出错信息也只回显打码后的形态。
 
 const doneFrame = "[DONE]"
+
+// scenario 是验收集的注册单位: 一段可独立执行的请求序列, 以及它产出的判据。
+// requests 是成本披露 (真实请求次数), 供调用方决定要不要跑。
+type scenario struct {
+	id       string
+	requests int
+	desc     string
+	run      func(*session)
+}
+
+// scenarioRegistry 是场景的唯一权威来源: -list、成本合计、范围判定、调度全部由它派生。
+var scenarioRegistry = []scenario{
+	{"session", 3, "多轮会话: 流式帧合规 / 正文输出 / 上下文记忆 / 多轮前缀缓存", runSession},
+	{"probe", 2, "重复请求缓存: 同一请求连发两次, 第二次应命中前缀缓存", runProbe},
+	{"nonstream", 1, "非流式链路: 插件聚合上游流式后返回完整 chat.completion", runNonStream},
+	{"tools", 3, "工具调用: 定义透传 / 非流式聚合 / 工具结果消费", runTools},
+	{"effort", 2, "思考深度与思维链: 最低档与最高档对比", runEffort},
+}
+
+// defaultScenarios 是「没有指定场景」时的执行集, 刻意不含 tools/effort:
+// 那两项判据成本高且只对请求构造改动敏感, 应在改动相关时显式点名。
+var defaultScenarios = []string{"session", "nonstream"}
+
+// session 持有一次运行的全部状态: 目标实例、共享夹具、已产出的判据。
+// 判据不落全局变量, 同一进程内跑多个场景不会有残留。
+type session struct {
+	*runner
+	prefix   string
+	codeword string
+	results  []verdict
+}
+
+func (s *session) record(name, state, detail string) {
+	s.results = append(s.results, verdict{name, state, detail})
+	fmt.Printf("  %-28s %-6s %s\n", name, state, detail)
+}
+
+func (s *session) summary() (passed, warned, failed int) {
+	for _, v := range s.results {
+		switch v.state {
+		case "FAIL":
+			failed++
+		case "WARN":
+			warned++
+		}
+	}
+	return len(s.results) - failed - warned, warned, failed
+}
+
+// listFlag 支持 `-x a,b` 与 `-x a -x b` 两种写法, 多项参数是验收子集选择的载体。
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			*l = append(*l, s)
+		}
+	}
+	return nil
+}
+
+func printScenarioCatalog() {
+	fmt.Println("可用场景 (按需点名, 不必全跑):")
+	for _, s := range scenarioRegistry {
+		fmt.Printf("  %-10s %d 次请求   %s\n", s.id, s.requests, s.desc)
+	}
+	fmt.Printf("  %-10s %d 次请求   以上全部\n", "all", requestsOf(allScenarioIDs()))
+	fmt.Printf("\n默认 (不写 -scenarios): %s  共 %d 次请求\n",
+		strings.Join(defaultScenarios, ","), requestsOf(defaultScenarios))
+	fmt.Println("每个场景覆盖哪些判据见 .agents/skills/verify-cpa-plugin/features/chat.md")
+}
+
+func allScenarioIDs() []string {
+	ids := make([]string, 0, len(scenarioRegistry))
+	for _, s := range scenarioRegistry {
+		ids = append(ids, s.id)
+	}
+	return ids
+}
+
+func requestsOf(ids []string) int {
+	total := 0
+	for _, id := range ids {
+		for _, s := range scenarioRegistry {
+			if s.id == id {
+				total += s.requests
+			}
+		}
+	}
+	return total
+}
+
+func lookupScenario(id string) (scenario, bool) {
+	for _, s := range scenarioRegistry {
+		if s.id == id {
+			return s, true
+		}
+	}
+	return scenario{}, false
+}
+
+// resolveScenarios 把用户输入折成有序执行集, 并回传无法识别的名字。
+// 顺序即注册顺序, 与用户书写顺序无关: 多轮会话先跑, 后续场景才能复用前缀缓存。
+func resolveScenarios(input []string) ([]scenario, []string) {
+	if len(input) == 0 {
+		input = defaultScenarios
+	}
+	want := map[string]bool{}
+	var unknown []string
+	for _, raw := range input {
+		id := strings.ToLower(strings.TrimSpace(raw))
+		if id == "" {
+			continue
+		}
+		if id == "all" {
+			for _, s := range scenarioRegistry {
+				want[s.id] = true
+			}
+			continue
+		}
+		if _, ok := lookupScenario(id); !ok {
+			unknown = append(unknown, id)
+			continue
+		}
+		want[id] = true
+	}
+
+	ordered := make([]scenario, 0, len(want))
+	for _, s := range scenarioRegistry {
+		if want[s.id] {
+			ordered = append(ordered, s)
+		}
+	}
+	return ordered, unknown
+}
+
+// manifestPathFor 把 `<plugin>/<model>` 的模型 id 映射到插件自带清单。
+// 清单存裸 id, 故此处的 plugin 段不能写死, 否则换插件后清单查不到, 能力判据会静默退化。
+func manifestPathFor(modelID, override string) string {
+	if strings.TrimSpace(override) != "" {
+		return override
+	}
+	idx := strings.LastIndex(modelID, "/")
+	if idx <= 0 {
+		return ""
+	}
+	return filepath.Join("plugins", modelID[:idx], "data", "static-config.json")
+}
+
+func loadModelDef(manifestPath, modelID string) *manifestModel {
+	if manifestPath == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil
+	}
+	var doc manifestFile
+	if json.Unmarshal(raw, &doc) != nil {
+		return nil
+	}
+	bareID := modelID
+	if idx := strings.LastIndex(bareID, "/"); idx >= 0 {
+		bareID = bareID[idx+1:]
+	}
+	for i := range doc.Models {
+		if strings.EqualFold(doc.Models[i].ID, bareID) {
+			return &doc.Models[i]
+		}
+	}
+	return nil
+}
 
 // 工具结果的取值刻意取专用数字: 模型若真读了工具返回, 复述里必然出现该数字。
 const toolResult = "北京 晴 26 摄氏度 湿度 38%"
@@ -143,13 +319,6 @@ type verdict struct {
 	name   string
 	state  string
 	detail string
-}
-
-var results []verdict
-
-func record(name, state, detail string) {
-	results = append(results, verdict{name, state, detail})
-	fmt.Printf("  %-28s %-6s %s\n", name, state, detail)
 }
 
 func secRun(name string) string {
@@ -410,15 +579,31 @@ func buildPrefix(repeats int) string {
 
 func main() {
 	base := flag.String("base", "http://127.0.0.1:18317", "目标实例地址")
-	model := flag.String("model", "hy3", "被测模型 id")
-	manifestPath := flag.String("manifest", "plugins/workbuddy/data/static-config.json", "静态模型清单路径")
-	prefixRepeats := flag.Int("prefix", 120, "长前缀段落重复次数, 用于制造可命中缓存的公共前缀")
+	model := flag.String("model", "hy3", "被测模型 id, 形如 <plugin>/<model>")
+	manifestPath := flag.String("manifest", "", "静态模型清单路径, 默认按模型 id 的插件段推导")
+	prefixRepeats := flag.Int("prefix", 120, "长前缀段落重复次数, 用于制造可命中缓存的前缀")
 	timeout := flag.Duration("timeout", 180*time.Second, "单个请求超时")
 	tokenFile := flag.String("token-file", "", "管理密钥文件路径 (本地沙箱 per-run key), 设置时优先于 sec-run")
+	listScenarios := flag.Bool("list", false, "只打印可用场景与其请求成本, 不发请求")
+	var requested listFlag
+	flag.Var(&requested, "scenarios", "要执行的场景, 逗号分隔或重复传参; 默认 "+strings.Join(defaultScenarios, ","))
 	flag.Parse()
 
-	client := &http.Client{Timeout: *timeout}
-	run := &runner{base: *base, model: *model, client: client}
+	if *listScenarios {
+		printScenarioCatalog()
+		return
+	}
+
+	chosen, unknown := resolveScenarios(requested)
+	if len(unknown) > 0 {
+		fmt.Fprintf(os.Stderr, "[-] 未知场景: %s\n\n", strings.Join(unknown, ", "))
+		printScenarioCatalog()
+		os.Exit(2)
+	}
+	if len(chosen) == 0 {
+		fmt.Fprintln(os.Stderr, "[-] 没有任何可执行场景")
+		os.Exit(2)
+	}
 
 	token := readManagementToken(*tokenFile)
 	if token == "" {
@@ -430,23 +615,8 @@ func main() {
 		os.Exit(3)
 	}
 
-	if raw, err := os.ReadFile(*manifestPath); err == nil {
-		var doc manifestFile
-		if json.Unmarshal(raw, &doc) == nil {
-			// 宿主注册 id 形如 <plugin>/<model>, 清单存裸 id。剥掉最后一个 "/" 之前的部分,
-			// 不能写死某个插件的前缀, 否则换插件时清单整个查不到, 思考判据会被静默跳过。
-			bareID := *model
-			if idx := strings.LastIndex(bareID, "/"); idx >= 0 {
-				bareID = bareID[idx+1:]
-			}
-			for i := range doc.Models {
-				if strings.EqualFold(doc.Models[i].ID, bareID) {
-					run.modelDef = &doc.Models[i]
-					break
-				}
-			}
-		}
-	}
+	run := &runner{base: *base, model: *model, client: &http.Client{Timeout: *timeout}}
+	run.modelDef = loadModelDef(manifestPathFor(*model, *manifestPath), *model)
 
 	key, err := run.firstAPIKey(token)
 	if err != nil {
@@ -455,7 +625,13 @@ func main() {
 	}
 	run.apiKey = key
 
+	ids := make([]string, 0, len(chosen))
+	for _, s := range chosen {
+		ids = append(ids, s.id)
+	}
+
 	fmt.Printf("目标 %s 模型 %s\n", *base, *model)
+	fmt.Printf("  执行场景: %s (共 %d 次请求, 未点名的判据不执行)\n", strings.Join(ids, ", "), requestsOf(ids))
 	if run.modelDef == nil {
 		fmt.Println("  静态清单里没有该模型, 能力判据将退化为默认假设")
 	} else {
@@ -465,207 +641,213 @@ func main() {
 	}
 	fmt.Println()
 
-	prefix := buildPrefix(*prefixRepeats)
-	codeword := "ZQ-7741"
-
-	// ---- 指标 1 + 2 + 4: 一次多轮会话同时观察缓存、记忆与思维链 ----
-	fmt.Println("[多轮会话] 长前缀 + 暗号")
-	turn1, err1 := run.chat(chatRequest{messages: []chatMessage{
-		{Role: "system", Content: prefix},
-		{Role: "user", Content: "记住暗号 " + codeword + "，稍后我会问你。只回复 OK"},
-	}, stream: true})
-	checkTurn("轮次1 流式", turn1, err1)
-
-	history := []chatMessage{
-		{Role: "system", Content: prefix},
-		{Role: "user", Content: "记住暗号 " + codeword + "，稍后我会问你。只回复 OK"},
-		{Role: "assistant", Content: turn1.content},
-		{Role: "user", Content: "暗号是什么？只回复暗号本身"},
-	}
-	turn2, err2 := run.chat(chatRequest{messages: history, stream: true})
-	checkTurn("轮次2 流式", turn2, err2)
-	checkFraming(turn2)
-	// 思考判据不挂这一轮: 提示词是复述型, 上游本就不一定思考, 拿它判思考输出是错靶子。
-	checkText(turn2)
-
-	if err2 == nil {
-		if strings.Contains(turn2.content, codeword) {
-			record("上下文记忆", "PASS", "轮次2 正确复现暗号")
-		} else {
-			record("上下文记忆", "FAIL", "轮次2 未复现暗号, 实际回复 "+truncate(turn2.content, 60))
-		}
+	// 多轮会话需先跑: probe 与 effort 复用同一条长前缀, 顺序颠倒会丢掉缓存命中。
+	sess := &session{runner: run, prefix: buildPrefix(*prefixRepeats), codeword: "ZQ-7741"}
+	for _, s := range chosen {
+		s.run(sess)
+		fmt.Println()
 	}
 
-	turn3, err3 := run.chat(chatRequest{messages: append(history,
-		chatMessage{Role: "assistant", Content: turn2.content},
-		chatMessage{Role: "user", Content: "把刚才那段背景资料的第一条编号复述出来，只回复编号数字"},
-	), stream: true})
-	checkTurn("轮次3 流式", turn3, err3)
-
-	fmt.Println()
-	fmt.Println("[缓存] 同一请求连发两次, 第二次应命中前缀缓存")
-	probe := []chatMessage{
-		{Role: "system", Content: prefix},
-		{Role: "user", Content: "只回复 OK"},
-	}
-	probeFirst, errP1 := run.chat(chatRequest{messages: probe, stream: true})
-	checkTurn("探针 首次", probeFirst, errP1)
-	probeSecond, errP2 := run.chat(chatRequest{messages: probe, stream: true})
-	checkTurn("探针 二次", probeSecond, errP2)
-
-	reportCache("多轮缓存(轮次2)", turn2)
-	reportCache("多轮缓存(轮次3)", turn3)
-	reportCache("重复请求缓存(二次)", probeSecond)
-
-	for _, t := range []struct {
-		name string
-		turn turn
-		err  error
-	}{{"轮次2", turn2, err2}, {"轮次3", turn3, err3}, {"探针二次", probeSecond, errP2}} {
-		if t.err != nil {
-			continue
-		}
-		if t.turn.usage == nil {
-			record("用量上报 "+t.name, "FAIL", "流式响应没有 usage, 无法计算缓存率")
-		}
-	}
-	fmt.Println()
-
-	// ---- 非流式: 上游只支持流式, 这条必须由插件聚合后返回完整响应 ----
-	fmt.Println("[非流式] 单次请求应返回完整 chat.completion")
-	nonStream, nonStreamErr := run.chat(chatRequest{messages: []chatMessage{
-		{Role: "user", Content: "只回复四个字: 链路正常"},
-	}})
-	checkNonStream(nonStream, nonStreamErr)
-
-	// ---- 工具调用: 定义透传与结果消费, 两轮之间要把调用原样带回 ----
-	fmt.Println()
-	fmt.Println("[工具调用] 工具定义透传 + 工具结果消费")
-	checkTools(run)
-
-	// ---- 指标 3: 思考深度是否真的传到上游 ----
-	if run.modelDef != nil && len(run.modelDef.SupportedEfforts) > 0 {
-		efforts := append([]string(nil), run.modelDef.SupportedEfforts...)
-		sort.Slice(efforts, func(i, j int) bool { return effortRank(efforts[i]) < effortRank(efforts[j]) })
-		low, high := efforts[0], efforts[len(efforts)-1]
-		fmt.Printf("[思考深度] 对比 reasoning_effort=%s 与 %s\n", low, high)
-
-		prompt := []chatMessage{{Role: "user", Content: "在 1 到 300 之间, 有多少个整数的十进制写法里出现过字符 7? 先推演再给结论, 结论单独一行写 答案=N"}}
-		lowTurn, lowErr := run.chat(chatRequest{messages: prompt, effort: low, stream: true})
-		checkTurn("低档 "+low, lowTurn, lowErr)
-		highTurn, highErr := run.chat(chatRequest{messages: prompt, effort: high, stream: true})
-		checkTurn("高档 "+high, highTurn, highErr)
-		if highErr == nil {
-			checkCoT(highTurn)
-		}
-
-		lowReasoning, highReasoning := -1, -1
-		if lowTurn.usage != nil {
-			lowReasoning = lowTurn.usage.CompletionDetails.ReasoningTokens
-		}
-		if highTurn.usage != nil {
-			highReasoning = highTurn.usage.CompletionDetails.ReasoningTokens
-		}
-		lowChars := len([]rune(lowTurn.reasoning))
-		highChars := len([]rune(highTurn.reasoning))
-
-		switch {
-		case lowErr != nil || highErr != nil:
-			record("思考深度传递", "FAIL", "请求未成功, 无法比较")
-		case lowReasoning >= 0 && highReasoning >= 0:
-			switch {
-			case highReasoning > lowReasoning:
-				record("思考深度传递", "PASS",
-					fmt.Sprintf("reasoning_tokens %s=%d < %s=%d", low, lowReasoning, high, highReasoning))
-			case highReasoning == lowReasoning:
-				record("思考深度传递", "WARN",
-					fmt.Sprintf("两档 reasoning_tokens 相同(%d), 可能是采样波动, 也可能档位没传到上游", highReasoning))
-			default:
-				record("思考深度传递", "FAIL",
-					fmt.Sprintf("高档推理反而更少: %s=%d > %s=%d", low, lowReasoning, high, highReasoning))
-			}
-		default:
-			// 上游没回报 usage 时退到推理正文长度: 档位有没有传到上游, 从推理量仍看得出来。
-			switch {
-			case lowChars == 0 || highChars == 0:
-				record("思考深度传递", "FAIL",
-					fmt.Sprintf("两档都没有 reasoning_tokens, 推理正文也是空的 (low=%d 字, high=%d 字)", lowChars, highChars))
-			case highChars > lowChars:
-				record("思考深度传递", "PASS",
-					fmt.Sprintf("usage 缺失, 按推理字数比较: %s=%d 字 < %s=%d 字", low, lowChars, high, highChars))
-			case highChars == lowChars:
-				record("思考深度传递", "WARN",
-					fmt.Sprintf("usage 缺失, 两档推理字数相同(%d), 分不出档位", highChars))
-			default:
-				record("思考深度传递", "FAIL",
-					fmt.Sprintf("usage 缺失, 高档推理反而更少: %s=%d 字 > %s=%d 字", low, lowChars, high, highChars))
-			}
-		}
-	} else {
-		fmt.Println("[思考深度] 跳过: 清单未声明该模型的档位")
-	}
-
-	fmt.Println()
-	failed := 0
-	warned := 0
-	for _, v := range results {
-		switch v.state {
-		case "FAIL":
-			failed++
-		case "WARN":
-			warned++
-		}
-	}
-	fmt.Printf("结论: %d 项通过, %d 项警告, %d 项失败\n", len(results)-failed-warned, warned, failed)
+	passed, warned, failed := sess.summary()
+	fmt.Printf("结论: %d 项通过, %d 项警告, %d 项失败 (场景: %s)\n",
+		passed, warned, failed, strings.Join(ids, ","))
 	if failed > 0 {
 		os.Exit(1)
 	}
 }
 
-func checkTurn(label string, t turn, err error) {
+// runSession 用一次多轮会话同时观察帧合规、正文、上下文记忆与多轮前缀缓存。
+func runSession(s *session) {
+	fmt.Println("[多轮会话] 长前缀 + 暗号")
+	turn1, err1 := s.chat(chatRequest{messages: []chatMessage{
+		{Role: "system", Content: s.prefix},
+		{Role: "user", Content: "记住暗号 " + s.codeword + "，稍后我会问你。只回复 OK"},
+	}, stream: true})
+	checkTurn(s, "轮次1 流式", turn1, err1)
+
+	history := []chatMessage{
+		{Role: "system", Content: s.prefix},
+		{Role: "user", Content: "记住暗号 " + s.codeword + "，稍后我会问你。只回复 OK"},
+		{Role: "assistant", Content: turn1.content},
+		{Role: "user", Content: "暗号是什么？只回复暗号本身"},
+	}
+	turn2, err2 := s.chat(chatRequest{messages: history, stream: true})
+	checkTurn(s, "轮次2 流式", turn2, err2)
+	checkFraming(s, turn2)
+	// 思考判据不挂这一轮: 提示词是复述型, 上游本就不一定思考, 拿它判思考输出是错靶子。
+	checkText(s, turn2)
+
+	if err2 == nil {
+		if strings.Contains(turn2.content, s.codeword) {
+			s.record("上下文记忆", "PASS", "轮次2 正确复现暗号")
+		} else {
+			s.record("上下文记忆", "FAIL", "轮次2 未复现暗号, 实际回复 "+truncate(turn2.content, 60))
+		}
+	}
+
+	turn3, err3 := s.chat(chatRequest{messages: append(history,
+		chatMessage{Role: "assistant", Content: turn2.content},
+		chatMessage{Role: "user", Content: "把刚才那段背景资料的第一条编号复述出来，只回复编号数字"},
+	), stream: true})
+	checkTurn(s, "轮次3 流式", turn3, err3)
+
+	reportCache(s, "多轮缓存(轮次2)", turn2)
+	reportCache(s, "多轮缓存(轮次3)", turn3)
+
+	for _, t := range []struct {
+		name string
+		turn turn
+		err  error
+	}{{"轮次2", turn2, err2}, {"轮次3", turn3, err3}} {
+		if t.err != nil || t.turn.usage != nil {
+			continue
+		}
+		s.record("用量上报 "+t.name, "FAIL", "流式响应没有 usage, 无法计算缓存率")
+	}
+}
+
+// runProbe 同一请求连发两次: 第二次必须命中前缀缓存, 否则说明请求头每轮变动导致上游认新会话。
+func runProbe(s *session) {
+	fmt.Println("[缓存] 同一请求连发两次, 第二次应命中前缀缓存")
+	probe := []chatMessage{
+		{Role: "system", Content: s.prefix},
+		{Role: "user", Content: "只回复 OK"},
+	}
+	probeFirst, errP1 := s.chat(chatRequest{messages: probe, stream: true})
+	checkTurn(s, "探针 首次", probeFirst, errP1)
+	probeSecond, errP2 := s.chat(chatRequest{messages: probe, stream: true})
+	checkTurn(s, "探针 二次", probeSecond, errP2)
+
+	reportCache(s, "重复请求缓存(二次)", probeSecond)
+	if errP2 == nil && probeSecond.usage == nil {
+		s.record("用量上报 探针二次", "FAIL", "流式响应没有 usage, 无法计算缓存率")
+	}
+}
+
+// runNonStream 覆盖上游只支持流式的场景: 这条必须由插件聚合后返回完整响应。
+func runNonStream(s *session) {
+	fmt.Println("[非流式] 单次请求应返回完整 chat.completion")
+	nonStream, err := s.chat(chatRequest{messages: []chatMessage{
+		{Role: "user", Content: "只回复四个字: 链路正常"},
+	}})
+	checkNonStream(s, nonStream, err)
+}
+
+// runTools 覆盖工具定义透传与工具结果消费, 两轮之间要把调用原样带回。
+func runTools(s *session) {
+	fmt.Println("[工具调用] 工具定义透传 + 工具结果消费")
+	checkTools(s)
+}
+
+// runEffort 对比最低档与最高档: 思考深度有没有真的传到上游。
+func runEffort(s *session) {
+	if s.modelDef == nil || len(s.modelDef.SupportedEfforts) == 0 {
+		fmt.Println("[思考深度] 跳过: 清单未声明该模型的档位")
+		return
+	}
+
+	efforts := append([]string(nil), s.modelDef.SupportedEfforts...)
+	sort.Slice(efforts, func(i, j int) bool { return effortRank(efforts[i]) < effortRank(efforts[j]) })
+	low, high := efforts[0], efforts[len(efforts)-1]
+	fmt.Printf("[思考深度] 对比 reasoning_effort=%s 与 %s\n", low, high)
+
+	prompt := []chatMessage{{Role: "user", Content: "在 1 到 300 之间, 有多少个整数的十进制写法里出现过字符 7? 先推演再给结论, 结论单独一行写 答案=N"}}
+	lowTurn, lowErr := s.chat(chatRequest{messages: prompt, effort: low, stream: true})
+	checkTurn(s, "低档 "+low, lowTurn, lowErr)
+	highTurn, highErr := s.chat(chatRequest{messages: prompt, effort: high, stream: true})
+	checkTurn(s, "高档 "+high, highTurn, highErr)
+	if highErr == nil {
+		checkCoT(s, highTurn)
+	}
+
+	lowReasoning, highReasoning := -1, -1
+	if lowTurn.usage != nil {
+		lowReasoning = lowTurn.usage.CompletionDetails.ReasoningTokens
+	}
+	if highTurn.usage != nil {
+		highReasoning = highTurn.usage.CompletionDetails.ReasoningTokens
+	}
+	lowChars := len([]rune(lowTurn.reasoning))
+	highChars := len([]rune(highTurn.reasoning))
+
+	switch {
+	case lowErr != nil || highErr != nil:
+		s.record("思考深度传递", "FAIL", "请求未成功, 无法比较")
+	case lowReasoning >= 0 && highReasoning >= 0:
+		switch {
+		case highReasoning > lowReasoning:
+			s.record("思考深度传递", "PASS",
+				fmt.Sprintf("reasoning_tokens %s=%d < %s=%d", low, lowReasoning, high, highReasoning))
+		case highReasoning == lowReasoning:
+			s.record("思考深度传递", "WARN",
+				fmt.Sprintf("两档 reasoning_tokens 相同(%d), 可能是采样波动, 也可能档位没传到上游", highReasoning))
+		default:
+			s.record("思考深度传递", "FAIL",
+				fmt.Sprintf("高档推理反而更少: %s=%d > %s=%d", low, lowReasoning, high, highReasoning))
+		}
+	default:
+		// 上游没回报 usage 时退到推理正文长度: 档位有没有传到上游, 从推理量仍看得出来。
+		switch {
+		case lowChars == 0 || highChars == 0:
+			s.record("思考深度传递", "FAIL",
+				fmt.Sprintf("两档都没有 reasoning_tokens, 推理正文也是空的 (low=%d 字, high=%d 字)", lowChars, highChars))
+		case highChars > lowChars:
+			s.record("思考深度传递", "PASS",
+				fmt.Sprintf("usage 缺失, 按推理字数比较: %s=%d 字 < %s=%d 字", low, lowChars, high, highChars))
+		case highChars == lowChars:
+			s.record("思考深度传递", "WARN",
+				fmt.Sprintf("usage 缺失, 两档推理字数相同(%d), 分不出档位", highChars))
+		default:
+			s.record("思考深度传递", "FAIL",
+				fmt.Sprintf("usage 缺失, 高档推理反而更少: %s=%d 字 > %s=%d 字", low, lowChars, high, highChars))
+		}
+	}
+}
+
+func checkTurn(s *session, label string, t turn, err error) {
 	if err != nil {
-		record(label, "FAIL", "请求失败: "+err.Error()+" 响应头: "+truncate(t.rawHead, 80))
+		s.record(label, "FAIL", "请求失败: "+err.Error()+" 响应头: "+truncate(t.rawHead, 80))
 		return
 	}
 	if t.stream && !t.done {
-		record(label, "FAIL", fmt.Sprintf("流式响应没有终止帧, 只收到 %d 帧", t.frames))
+		s.record(label, "FAIL", fmt.Sprintf("流式响应没有终止帧, 只收到 %d 帧", t.frames))
 		return
 	}
-	record(label, "OK", fmt.Sprintf("HTTP %d, %d 帧, 正文 %d 字, 推理 %d 字",
+	s.record(label, "OK", fmt.Sprintf("HTTP %d, %d 帧, 正文 %d 字, 推理 %d 字",
 		t.status, t.frames, len([]rune(t.content)), len([]rune(t.reasoning))))
 }
 
-func checkFraming(t turn) {
+func checkFraming(s *session, t turn) {
 	if t.doubleFrame > 0 {
-		record("流式帧合规", "FAIL",
+		s.record("流式帧合规", "FAIL",
 			fmt.Sprintf("%d 帧带双重 data 前缀, 标准客户端无法解析, 首个载荷: %s", t.doubleFrame, t.invalidPay))
 		return
 	}
 	if t.invalidPay != "" {
-		record("流式帧合规", "FAIL", "存在非 JSON 载荷: "+t.invalidPay)
+		s.record("流式帧合规", "FAIL", "存在非 JSON 载荷: "+t.invalidPay)
 		return
 	}
 	if !t.done {
-		record("流式帧合规", "FAIL", "缺少终止帧 [DONE]")
+		s.record("流式帧合规", "FAIL", "缺少终止帧 [DONE]")
 		return
 	}
-	record("流式帧合规", "PASS", fmt.Sprintf("%d 帧全部为合法 JSON, 终止帧存在", t.frames))
+	s.record("流式帧合规", "PASS", fmt.Sprintf("%d 帧全部为合法 JSON, 终止帧存在", t.frames))
 }
 
 // checkTools 跑两轮: 首轮看模型是否真的发起工具调用, 次轮把调用与工具结果带回, 看模型是否消费了结果。
 // 工具定义与工具结果都要经宿主与插件原样往返, 任一层丢帧或拼错 arguments 都在这里现形。
-func checkTools(run *runner) {
+func checkTools(s *session) {
 	tools := []toolSpec{weatherTool()}
 	first := []chatMessage{{Role: "user", Content: "北京现在天气怎么样? 必须调用 get_weather 工具查, 不要凭记忆回答"}}
 
-	streamed, streamErr := run.chat(chatRequest{messages: first, stream: true, tools: tools})
-	reportToolCall("工具调用 流式", streamed, streamErr, true)
+	streamed, streamErr := s.chat(chatRequest{messages: first, stream: true, tools: tools})
+	reportToolCall(s, "工具调用 流式", streamed, streamErr, true)
 
-	aggregated, aggregatedErr := run.chat(chatRequest{messages: first, tools: tools})
-	reportToolCall("工具调用 非流式", aggregated, aggregatedErr, false)
+	aggregated, aggregatedErr := s.chat(chatRequest{messages: first, tools: tools})
+	reportToolCall(s, "工具调用 非流式", aggregated, aggregatedErr, false)
 
 	if len(streamed.toolCalls) == 0 {
-		record("工具结果消费", "FAIL", "首轮没有拿到可回填的 tool_calls, 次轮无从发起")
+		s.record("工具结果消费", "FAIL", "首轮没有拿到可回填的 tool_calls, 次轮无从发起")
 		return
 	}
 	call := streamed.toolCalls[0]
@@ -673,16 +855,16 @@ func checkTools(run *runner) {
 		chatMessage{Role: "assistant", ToolCalls: []toolCall{call}},
 		chatMessage{Role: "tool", ToolCallID: call.ID, Content: toolResult},
 	)
-	consumed, consumedErr := run.chat(chatRequest{messages: second, stream: true, tools: tools})
+	consumed, consumedErr := s.chat(chatRequest{messages: second, stream: true, tools: tools})
 	if consumedErr != nil {
-		record("工具结果消费", "FAIL", "请求失败: "+consumedErr.Error()+" 响应头: "+truncate(consumed.rawHead, 80))
+		s.record("工具结果消费", "FAIL", "请求失败: "+consumedErr.Error()+" 响应头: "+truncate(consumed.rawHead, 80))
 		return
 	}
 	if strings.Contains(consumed.content, "26") || strings.Contains(consumed.content, "晴") {
-		record("工具结果消费", "PASS", "模型引用了工具返回的天气 "+truncate(consumed.content, 40))
+		s.record("工具结果消费", "PASS", "模型引用了工具返回的天气 "+truncate(consumed.content, 40))
 		return
 	}
-	record("工具结果消费", "FAIL", "模型没有引用工具结果, 实际回复 "+truncate(consumed.content, 60))
+	s.record("工具结果消费", "FAIL", "模型没有引用工具结果, 实际回复 "+truncate(consumed.content, 60))
 }
 
 func weatherTool() toolSpec {
@@ -700,103 +882,103 @@ func weatherTool() toolSpec {
 	return spec
 }
 
-func reportToolCall(label string, t turn, err error, streaming bool) {
+func reportToolCall(s *session, label string, t turn, err error, streaming bool) {
 	if err != nil {
-		record(label, "FAIL", "请求失败: "+err.Error()+" 响应头: "+truncate(t.rawHead, 80))
+		s.record(label, "FAIL", "请求失败: "+err.Error()+" 响应头: "+truncate(t.rawHead, 80))
 		return
 	}
 	if streaming && !t.done {
-		record(label, "FAIL", fmt.Sprintf("流式响应没有终止帧, 只收到 %d 帧", t.frames))
+		s.record(label, "FAIL", fmt.Sprintf("流式响应没有终止帧, 只收到 %d 帧", t.frames))
 		return
 	}
 	if len(t.toolCalls) == 0 {
-		record(label, "FAIL", "响应没有 tool_calls, 工具定义没透传到上游; 实际正文 "+truncate(t.content, 40))
+		s.record(label, "FAIL", "响应没有 tool_calls, 工具定义没透传到上游; 实际正文 "+truncate(t.content, 40))
 		return
 	}
 	call := t.toolCalls[0]
 	if call.ID == "" {
-		record(label, "FAIL", "tool_calls 缺 id, 次轮无法把工具结果对回调用")
+		s.record(label, "FAIL", "tool_calls 缺 id, 次轮无法把工具结果对回调用")
 		return
 	}
 	if call.Function.Name == "" {
-		record(label, "FAIL", "tool_calls 缺函数名, 名字所在的帧被丢了")
+		s.record(label, "FAIL", "tool_calls 缺函数名, 名字所在的帧被丢了")
 		return
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-		record(label, "FAIL", fmt.Sprintf("%s 的 arguments 不是合法 JSON, 分片拼接有误: %s",
+		s.record(label, "FAIL", fmt.Sprintf("%s 的 arguments 不是合法 JSON, 分片拼接有误: %s",
 			call.Function.Name, truncate(call.Function.Arguments, 60)))
 		return
 	}
 	if t.finishReason != "tool_calls" {
-		record(label, "FAIL", fmt.Sprintf("finish_reason 应为 tool_calls, 实际 %q", t.finishReason))
+		s.record(label, "FAIL", fmt.Sprintf("finish_reason 应为 tool_calls, 实际 %q", t.finishReason))
 		return
 	}
-	record(label, "PASS", fmt.Sprintf("finish=%s, 调用 %s, arguments %s",
+	s.record(label, "PASS", fmt.Sprintf("finish=%s, 调用 %s, arguments %s",
 		t.finishReason, call.Function.Name, truncate(call.Function.Arguments, 50)))
 }
 
-func checkNonStream(t turn, err error) {
+func checkNonStream(s *session, t turn, err error) {
 	if err != nil {
-		record("非流式链路", "FAIL", "请求失败: "+err.Error()+" 响应头: "+truncate(t.rawHead, 80))
+		s.record("非流式链路", "FAIL", "请求失败: "+err.Error()+" 响应头: "+truncate(t.rawHead, 80))
 		return
 	}
 	if t.object != "chat.completion" {
-		record("非流式链路", "FAIL", "object 应为 chat.completion, 实际 "+truncate(t.object, 40))
+		s.record("非流式链路", "FAIL", "object 应为 chat.completion, 实际 "+truncate(t.object, 40))
 		return
 	}
 	if strings.TrimSpace(t.content) == "" && strings.TrimSpace(t.reasoning) == "" {
-		record("非流式链路", "FAIL", "聚合结果既无正文也无推理内容")
+		s.record("非流式链路", "FAIL", "聚合结果既无正文也无推理内容")
 		return
 	}
 	if t.finishReason == "" {
-		record("非流式链路", "FAIL", "缺 finish_reason")
+		s.record("非流式链路", "FAIL", "缺 finish_reason")
 		return
 	}
 	usage := "无 usage"
 	if t.usage != nil {
 		usage = fmt.Sprintf("prompt=%d completion=%d", t.usage.PromptTokens, t.usage.CompletionTokens)
 	}
-	record("非流式链路", "PASS",
+	s.record("非流式链路", "PASS",
 		fmt.Sprintf("HTTP %d, finish=%s, 正文 %d 字, %s", t.status, t.finishReason, len([]rune(t.content)), usage))
 }
 
 // checkCoT 只在推演型提示词 + 该模型最高档那一轮调用: 那里上游必出思考, 判据才只反映插件转发是否忠实。
 // 复述型提示词 (暗号、只回复两个字) 上游本就不一定思考, 拿它判思考输出是错靶子。
-func checkCoT(t turn) {
+func checkCoT(s *session, t turn) {
 	if strings.TrimSpace(t.reasoning) != "" {
-		record("思维链输出", "PASS",
+		s.record("思维链输出", "PASS",
 			fmt.Sprintf("推理增量 %d 字, 首段: %s", len([]rune(t.reasoning)), truncate(t.reasoning, 40)))
 		return
 	}
 	if t.usage != nil && t.usage.CompletionDetails.ReasoningTokens > 0 {
-		record("思维链输出", "FAIL",
+		s.record("思维链输出", "FAIL",
 			fmt.Sprintf("上游上报 reasoning_tokens=%d 但流里没有 reasoning_content, 插件丢了思考帧",
 				t.usage.CompletionDetails.ReasoningTokens))
 		return
 	}
-	record("思维链输出", "FAIL", "推演型提示词在上限档未出思考: 先查 effort 有没有传到上游")
+	s.record("思维链输出", "FAIL", "推演型提示词在上限档未出思考: 先查 effort 有没有传到上游")
 }
 
-func checkText(t turn) {
+func checkText(s *session, t turn) {
 	if strings.TrimSpace(t.content) == "" {
-		record("正文输出", "FAIL", "content 为空")
+		s.record("正文输出", "FAIL", "content 为空")
 		return
 	}
-	record("正文输出", "PASS", truncate(t.content, 60))
+	s.record("正文输出", "PASS", truncate(t.content, 60))
 }
 
-func reportCache(name string, t turn) {
+func reportCache(s *session, name string, t turn) {
 	if t.usage == nil {
-		record(name, "FAIL", "没有 usage, 无法判断缓存")
+		s.record(name, "FAIL", "没有 usage, 无法判断缓存")
 		return
 	}
 	hit := t.usage.cachedTokens()
 	if hit > 0 {
-		record(name, "PASS", fmt.Sprintf("命中 %d, 未命中 %d, 命中率 %.1f%%",
+		s.record(name, "PASS", fmt.Sprintf("命中 %d, 未命中 %d, 命中率 %.1f%%",
 			hit, t.usage.PromptCacheMissTokens, t.usage.cacheRatio()*100))
 		return
 	}
-	record(name, "FAIL", fmt.Sprintf("命中 0, prompt=%d 全部未命中, 前缀缓存没有生效",
+	s.record(name, "FAIL", fmt.Sprintf("命中 0, prompt=%d 全部未命中, 前缀缓存没有生效",
 		t.usage.PromptTokens))
 }

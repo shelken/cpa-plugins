@@ -8,6 +8,23 @@
 - `config-fields-render` 管理界面按插件上报的元数据渲染表单字段
 - `config-update` 通过管理接口热更新插件运行时配置
 
+## 断言子集
+
+断言 id 由 `dev-sandbox.go` 的注册表 (`checkRegistry`) 声明, `--checks list` 打印权威清单, 不在此处复制。下表只补充脚本派不出来的语义: 每个断言对应哪些判据、何时该跑。
+
+| 断言 id | 对应判据 | 何时该跑 |
+|---|---|---|
+| `load` | 宿主日志出现该插件 id 的 `plugin loaded` 与 `plugin registered` | 改了 `plugin.json`、`main.go` 注册路径、SDK 版本 |
+| `config` | 管理面 `config_fields` 非空且与声明一致 | 改了 `ConfigFields` 声明 |
+| `menus` | 管理面 `plugins` 列表暴露菜单 | 改了菜单/入口声明 |
+| `resource` | `/v0/resource/plugins/<id>/quota` 可服务 | 改了 resource 页面 |
+| `models` | `/v1/models` 覆盖静态清单声明的全部模型 | 改了静态清单或模型注册 |
+| `quota` | 额度提供方列表含插件 | 改了 QuotaProvider |
+
+装载类改动至少点名 `load,models`; 只改配置字段声明时 `-checks load,config` 足够。
+
+**加断言**: 写一个 `func(*sandbox, string) error`, 在 `checkRegistry` 注册一行; 每个断言对每个插件各跑一次, `--checks list`、解析与调度自动跟随。
+
 ## How to get to it (user POV)
 
 - 浏览器打开 `http://<host>:8317/management.html` 进入插件管理页

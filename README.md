@@ -38,10 +38,10 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 | :--- | :--- | :--- |
 | `build-registry.go` | 扫描 `plugins/` 与 `external/` 生成 `registry.json`，`--check` 校验是否最新 | `go run scripts/build-registry.go --check` |
 | `verify-registry-install.go` | 端到端校验清单、下载 Release 产物、核对 SHA256 与动态库格式，必须传插件 id | `go run scripts/verify-registry-install.go workbuddy` |
-| `dev-sandbox.go` | 编译插件、生成沙箱配置、启动宿主并断言装载与注册 | `go run scripts/dev-sandbox.go --plugin workbuddy` |
+| `dev-sandbox.go` | 编译插件、生成沙箱配置、启动宿主并断言装载与注册；`--plugin` 可重复传参一次起多个插件，`--checks` 选断言子集 | `go run scripts/dev-sandbox.go --plugin workbuddy --plugin qwenworkcn --checks load,models` |
 | `release.go` | 消费变更集产出版本、按宿主契约打包、用真实产物回填哈希，无参数打印子命令用法 | `go run scripts/release.go version --plugin workbuddy` |
 | `check-plugins.go` | 仓库不变量检查与发布门禁 | `go run scripts/check-plugins.go --strict` |
-| `verify-chat.go` | 对真实上游发对话请求，验证思考深度 | `go run scripts/verify-chat.go -base http://<host>:8317 -model workbuddy/hy3` |
+| `verify-chat.go` | 对真实上游发对话请求验证对话链路；`-scenarios` 按场景选判据（`-list` 打印清单），不传则跑默认子集 | `go run scripts/verify-chat.go -base http://<host>:8317 -model workbuddy/hy3 -scenarios session,nonstream` |
 | `management-api.go` | 调用宿主管理面接口 | `go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins` |
 
 各脚本的完整参数与行为以脚本自身的 usage 输出为准：

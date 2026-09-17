@@ -8,6 +8,18 @@
 - `models-blacklist` 带动态清单过滤的插件 (如 workbuddy) 按自身规则剔除官方隐藏模型后再上报; 纯静态插件 (如 qwenworkcn) 全量直报, 无此项
 - `models-metadata` 上下文长度与输出上限与静态清单一致
 
+## 断言子集
+
+`dev-sandbox.go --checks models` 覆盖 `models-serve` 与 `models-blacklist` 的「声明的必须都在」方向 (改了静态清单或注册过滤后点名它, 常与 `load` 同跑):
+
+```bash
+go run scripts/dev-sandbox.go -plugin <id> -checks load,models
+```
+
+多插件共生时一个宿主只拉一次 `/v1/models`, 各插件分别比对; 断言名与描述以 `--checks list` 为准。
+
+`models-metadata` 无脚本断言, 按下方 Driving it 的对照法人工核。
+
 ## How to get to it (user POV)
 
 - 客户端配置宿主地址后获取 `/v1/models` 列表

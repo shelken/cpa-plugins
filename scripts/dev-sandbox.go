@@ -8,8 +8,12 @@ package main
 //
 // 用法:
 //
-//	go run scripts/dev-sandbox.go --plugin workbuddy [--host <二进制>] [--host-src <源码目录>]
+//	go run scripts/dev-sandbox.go --plugin workbuddy [--plugin qwenworkcn] [--checks load,models]
+//	                              [--host <二进制>] [--host-src <源码目录>]
 //	                              [--port 18317] [--profile desktop] [--keep]
+//
+// --plugin 可重复或逗号分隔, 多插件共用一个宿主进程与沙箱目录 (默认目录名为 id 以 + 连接)。
+// --checks 选择要跑的断言子集, `--checks list` 打印清单; 断言都是离线的, 默认全跑。
 //
 // 沙箱不需要真实凭据: 装载、注册、模型清单三条断言都是离线的。凭据相关的验证
 // (扫码登录、真实对话、真实额度) 不在此脚本范围内。
@@ -36,19 +40,109 @@ import (
 
 var reGoModSDK = regexp.MustCompile(`github\.com/router-for-me/CLIProxyAPI/v7\s+v([0-9][^\s]*)`)
 
+// check 是断言的注册单位: 每个断言对单个插件各跑一次, 返回失败即终止。
+// 加断言 = 写一个 run 函数 + 注册一行, 调度不随断言数量增长。
+type check struct {
+	id   string
+	desc string
+	run  func(*sandbox, string) error
+}
+
+// checkRegistry 是断言清单的唯一权威来源: --checks list、解析、调度全部由它派生。
+var checkRegistry = []check{
+	{"load", "插件已装载并注册 (宿主日志 plugin loaded / plugin registered)", checkLoad},
+	{"models", "/v1/models 覆盖静态清单声明的全部模型", checkModels},
+	{"resource", "插件 resource 页面可被宿主服务", checkResource},
+	{"menus", "管理面 plugins 列表暴露插件菜单", checkMenus},
+	{"config", "管理面返回可视化配置字段", checkConfig},
+	{"quota", "额度提供方列表包含插件", checkQuota},
+}
+
+var defaultChecks = []string{"load", "models", "resource", "menus", "config", "quota"}
+
+// listFlag 支持 `-x a,b` 与 `-x a -x b` 两种写法, 多项参数是验收子集选择的载体。
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			*l = append(*l, s)
+		}
+	}
+	return nil
+}
+
+func printCheckCatalog() {
+	fmt.Println("可用断言 (按需点名, 不必全跑):")
+	for _, c := range checkRegistry {
+		fmt.Printf("  %-10s %s\n", c.id, c.desc)
+	}
+	fmt.Printf("  %-10s 以上全部 (默认)\n", "all")
+}
+
+func lookupCheck(id string) (check, bool) {
+	for _, c := range checkRegistry {
+		if c.id == id {
+			return c, true
+		}
+	}
+	return check{}, false
+}
+
+// resolveChecks 把用户输入折成有序执行集 (顺序即注册顺序), 并回传无法识别的名字。
+func resolveChecks(input []string) ([]check, []string) {
+	if len(input) == 0 {
+		input = defaultChecks
+	}
+	want := map[string]bool{}
+	var unknown []string
+	for _, raw := range input {
+		id := strings.ToLower(strings.TrimSpace(raw))
+		if id == "" {
+			continue
+		}
+		if id == "all" {
+			for _, c := range checkRegistry {
+				want[c.id] = true
+			}
+			continue
+		}
+		if _, ok := lookupCheck(id); !ok {
+			unknown = append(unknown, id)
+			continue
+		}
+		want[id] = true
+	}
+
+	ordered := make([]check, 0, len(want))
+	for _, c := range checkRegistry {
+		if want[c.id] {
+			ordered = append(ordered, c)
+		}
+	}
+	return ordered, unknown
+}
+
 type sandbox struct {
-	pluginID   string
-	pluginDir  string
-	sandboxDir string
+	pluginIDs  []string
+	pluginDirs map[string]string
 	hostBinary string
 	hostSource string
 	port       int
 	profile    string
 	timeout    time.Duration
 	keep       bool
+	chosen     []check
+
+	// sandboxDir 为空时由 pluginIDs 推导; 显式传 --dir 时原样使用
+	sandboxDir string
+
+	// modelIDs 是本次运行 /v1/models 的快照, 供各插件的模型断言复用
+	modelIDs map[string]bool
 
 	secret     string
-	library    string
 	configPath string
 	logPath    string
 	keyPath    string
@@ -58,8 +152,10 @@ type sandbox struct {
 }
 
 func main() {
-	s := &sandbox{}
-	flag.StringVar(&s.pluginID, "plugin", "", "插件 id (plugins/ 下的目录名)")
+	s := &sandbox{pluginDirs: map[string]string{}}
+	var plugins listFlag
+	var checks listFlag
+	flag.Var(&plugins, "plugin", "插件 id (plugins/ 下的目录名), 逗号分隔或重复传参")
 	flag.StringVar(&s.hostBinary, "host", "", "宿主二进制路径")
 	flag.StringVar(&s.hostSource, "host-src", os.Getenv("CPA_HOST_SRC"), "CLIProxyAPI 源码目录, 用于现场构建宿主")
 	flag.StringVar(&s.sandboxDir, "dir", "", "沙箱目录, 默认 ~/.cache/cpa-plugins/sandbox/<id>")
@@ -67,22 +163,57 @@ func main() {
 	flag.IntVar(&s.port, "port", 18317, "宿主监听端口")
 	flag.DurationVar(&s.timeout, "timeout", 30*time.Second, "等待宿主就绪与断言的总超时")
 	flag.BoolVar(&s.keep, "keep", false, "结束后保留宿主机进程与沙箱目录")
+	flag.Var(&checks, "checks", "要跑的断言, 逗号分隔或重复传参; --checks list 打印清单")
 	flag.Parse()
 
-	if strings.TrimSpace(s.pluginID) == "" {
+	if len(checks) == 1 && strings.EqualFold(strings.TrimSpace(checks[0]), "list") {
+		printCheckCatalog()
+		return
+	}
+
+	// 去重保持顺序, 同一个插件重复传参不重复构建
+	seen := map[string]bool{}
+	for _, id := range plugins {
+		if !seen[id] {
+			seen[id] = true
+			s.pluginIDs = append(s.pluginIDs, id)
+		}
+	}
+	if len(s.pluginIDs) == 0 {
 		fmt.Fprintln(os.Stderr, "[-] 必须指定 --plugin")
 		flag.Usage()
 		os.Exit(2)
 	}
+
+	chosen, unknown := resolveChecks(checks)
+	if len(unknown) > 0 {
+		fmt.Fprintf(os.Stderr, "[-] 未知断言: %s\n\n", strings.Join(unknown, ", "))
+		printCheckCatalog()
+		os.Exit(2)
+	}
+	if len(chosen) == 0 {
+		fmt.Fprintln(os.Stderr, "[-] 没有可执行的断言")
+		os.Exit(2)
+	}
+	s.chosen = chosen
+
 	if s.sandboxDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[-] 无法定位用户目录: %v\n", err)
 			os.Exit(1)
 		}
-		s.sandboxDir = filepath.Join(home, ".cache", "cpa-plugins", "sandbox", s.pluginID)
+		s.sandboxDir = filepath.Join(home, ".cache", "cpa-plugins", "sandbox", strings.Join(s.pluginIDs, "+"))
 	}
-	s.pluginDir = filepath.Join("plugins", s.pluginID)
+	for _, id := range s.pluginIDs {
+		s.pluginDirs[id] = filepath.Join("plugins", id)
+	}
+
+	names := make([]string, 0, len(s.chosen))
+	for _, c := range s.chosen {
+		names = append(names, c.id)
+	}
+	fmt.Printf("[*] 执行断言: %s (未点名的不执行)\n", strings.Join(names, ", "))
 
 	if err := s.run(); err != nil {
 		fmt.Fprintf(os.Stderr, "\n[-] %v\n", err)
@@ -99,15 +230,17 @@ func main() {
 }
 
 func (s *sandbox) run() error {
-	if _, err := os.Stat(filepath.Join(s.pluginDir, "go.mod")); err != nil {
-		return fmt.Errorf("找不到插件 %s 的 go.mod, 确认 id 是否正确", s.pluginID)
+	for _, id := range s.pluginIDs {
+		if _, err := os.Stat(filepath.Join(s.pluginDirs[id], "go.mod")); err != nil {
+			return fmt.Errorf("找不到插件 %s 的 go.mod, 确认 id 是否正确", id)
+		}
 	}
 
-	sdkVersion, err := s.readSDKVersion()
+	sdkVersion, err := s.readSDKVersion(s.pluginDirs[s.pluginIDs[0]])
 	if err != nil {
 		return err
 	}
-	fmt.Printf("[*] 插件 %s, 目标宿主 SDK v%s\n", s.pluginID, sdkVersion)
+	fmt.Printf("[*] 插件 %s, 目标宿主 SDK v%s\n", strings.Join(s.pluginIDs, ", "), sdkVersion)
 
 	if err := s.resolveHost(sdkVersion); err != nil {
 		return err
@@ -119,8 +252,10 @@ func (s *sandbox) run() error {
 	if err := s.prepareLayout(); err != nil {
 		return err
 	}
-	if err := s.buildPlugin(); err != nil {
-		return err
+	for _, id := range s.pluginIDs {
+		if err := s.buildPlugin(id); err != nil {
+			return err
+		}
 	}
 	if err := s.writeConfig(); err != nil {
 		return err
@@ -131,8 +266,8 @@ func (s *sandbox) run() error {
 	return s.assert()
 }
 
-func (s *sandbox) readSDKVersion() (string, error) {
-	data, err := os.ReadFile(filepath.Join(s.pluginDir, "go.mod"))
+func (s *sandbox) readSDKVersion(pluginDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(pluginDir, "go.mod"))
 	if err != nil {
 		return "", err
 	}
@@ -215,29 +350,29 @@ func (s *sandbox) verifyHostVersion(sdkVersion string) error {
 }
 
 func (s *sandbox) prepareLayout() error {
-	extension := platformExtension(runtime.GOOS)
-	s.library = filepath.Join(s.sandboxDir, "plugins", runtime.GOOS, runtime.GOARCH, s.pluginID+extension)
 	s.configPath = filepath.Join(s.sandboxDir, "config.yaml")
 	s.logPath = filepath.Join(s.sandboxDir, "host.log")
 	s.keyPath = filepath.Join(s.sandboxDir, "management-key")
 
-	if err := os.MkdirAll(filepath.Dir(s.library), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.sandboxDir, "plugins", runtime.GOOS, runtime.GOARCH), 0o755); err != nil {
 		return err
 	}
 	return os.MkdirAll(filepath.Join(s.sandboxDir, "auth"), 0o755)
 }
 
-func (s *sandbox) buildPlugin() error {
-	fmt.Printf("[*] 构建插件动态库 -> %s\n", s.library)
-	build := exec.Command("go", "build", "-buildmode=c-shared", "-o", s.library, ".")
-	build.Dir = s.pluginDir
+// buildPlugin 编译单个插件到宿主扫描目录; 多插件时每个都产出一个动态库。
+func (s *sandbox) buildPlugin(id string) error {
+	library := filepath.Join(s.sandboxDir, "plugins", runtime.GOOS, runtime.GOARCH, id+platformExtension(runtime.GOOS))
+	fmt.Printf("[*] 构建插件 %s -> %s\n", id, library)
+	build := exec.Command("go", "build", "-buildmode=c-shared", "-o", library, ".")
+	build.Dir = s.pluginDirs[id]
 	build.Env = append(os.Environ(), "CGO_ENABLED=1")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
-		return fmt.Errorf("构建插件失败: %w", err)
+		return fmt.Errorf("构建插件 %s 失败: %w", id, err)
 	}
 	// c-shared 会顺带生成同名头文件, 留在插件目录里属于构建垃圾
-	header := strings.TrimSuffix(s.library, filepath.Ext(s.library)) + ".h"
+	header := strings.TrimSuffix(library, filepath.Ext(library)) + ".h"
 	_ = os.Remove(header)
 	return nil
 }
@@ -258,11 +393,13 @@ func (s *sandbox) writeConfig() error {
 	builder.WriteString("  enabled: true\n")
 	fmt.Fprintf(&builder, "  dir: %q\n", filepath.Join(s.sandboxDir, "plugins"))
 	builder.WriteString("  configs:\n")
-	fmt.Fprintf(&builder, "    %s:\n", s.pluginID)
-	builder.WriteString("      enabled: true\n")
-	if s.profile != "" {
-		fmt.Fprintf(&builder, "      identity-profile: %q\n", s.profile)
-		fmt.Fprintf(&builder, "      login-profile: %q\n", s.profile)
+	for _, id := range s.pluginIDs {
+		fmt.Fprintf(&builder, "    %s:\n", id)
+		builder.WriteString("      enabled: true\n")
+		if s.profile != "" {
+			fmt.Fprintf(&builder, "      identity-profile: %q\n", s.profile)
+			fmt.Fprintf(&builder, "      login-profile: %q\n", s.profile)
+		}
 	}
 
 	if err := os.WriteFile(s.configPath, []byte(builder.String()), 0o644); err != nil {
@@ -306,42 +443,60 @@ func (s *sandbox) startHost() error {
 	return fmt.Errorf("等待宿主就绪超时 (%s)", s.timeout)
 }
 
+// assert 按注册顺序调度断言, 每个断言对每个插件各跑一次。
 func (s *sandbox) assert() error {
-	log := s.readLog()
+	// 模型断言对所有插件复用一次 /v1/models 快照, 避免 N 次重复请求。
+	served, err := s.servedModelIDs()
+	if err != nil {
+		return err
+	}
+	s.modelIDs = served
 
-	if !strings.Contains(log, "plugin loaded") {
-		return fmt.Errorf("宿主日志中没有出现 plugin loaded, 插件未被装载")
+	for _, c := range s.chosen {
+		for _, id := range s.pluginIDs {
+			if err := c.run(s, id); err != nil {
+				return err
+			}
+		}
 	}
-	if !strings.Contains(log, "plugin registered") {
-		return fmt.Errorf("宿主日志中出现了 plugin loaded 但没有 plugin registered, 插件注册失败")
+	return nil
+}
+
+// checkLoad 断言宿主日志里该插件已完成装载与注册。
+// 日志行形如 `pluginhost: plugin loaded plugin_id=<id> path=...`, 按 plugin_id 逐插件判定,
+// 多插件共生时不会把「有插件装载了」误当成「这个插件装载了」。
+func checkLoad(s *sandbox, pluginID string) error {
+	log := s.readLog()
+	loaded := strings.Contains(log, "plugin loaded plugin_id="+pluginID)
+	registered := strings.Contains(log, "plugin registered plugin_id="+pluginID)
+	if !loaded {
+		return fmt.Errorf("宿主日志中没有 %s 的 plugin loaded 行, 插件未被装载", pluginID)
 	}
-	fmt.Println("[+] 断言通过: 插件已装载并注册")
+	if !registered {
+		return fmt.Errorf("宿主日志中有 %s 的 plugin loaded 但没有 plugin registered, 插件注册失败", pluginID)
+	}
+	fmt.Printf("[+] 断言通过: 插件 %s 已装载并注册\n", pluginID)
 
 	if strings.Contains(log, "pluginhost: model registrar") && strings.Contains(log, "context deadline exceeded") {
 		fmt.Println("[!] 警告: 日志中出现 model registrar 超时, 模型可能未完成注册")
 	}
-
-	if err := s.assertModels(); err != nil {
-		return err
-	}
-	if err := s.assertResourcePage(); err != nil {
-		return err
-	}
-	if err := s.assertPluginMenus(); err != nil {
-		return err
-	}
-	s.reportConfigFields()
-	s.reportQuotaProvider()
 	return nil
 }
 
-func (s *sandbox) assertModels() error {
+// servedModelIDs 拉一次 /v1/models 供所有插件的模型断言复用; 未点名 models 断言时返回空。
+func (s *sandbox) servedModelIDs() (map[string]bool, error) {
+	if _, ok := lookupCheck("models"); !ok {
+		return nil, nil
+	}
+	if !s.wantsCheck("models") {
+		return nil, nil
+	}
 	body, status, err := s.httpGet("/v1/models", false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("GET /v1/models 返回 %d: %s", status, truncate(body, 200))
+		return nil, fmt.Errorf("GET /v1/models 返回 %d: %s", status, truncate(body, 200))
 	}
 
 	var payload struct {
@@ -350,15 +505,28 @@ func (s *sandbox) assertModels() error {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
-		return fmt.Errorf("解析 /v1/models 响应失败: %w", err)
+		return nil, fmt.Errorf("解析 /v1/models 响应失败: %w", err)
 	}
 
 	served := map[string]bool{}
 	for _, item := range payload.Data {
 		served[item.ID] = true
 	}
+	return served, nil
+}
 
-	declared, err := s.declaredModels()
+func (s *sandbox) wantsCheck(id string) bool {
+	for _, c := range s.chosen {
+		if c.id == id {
+			return true
+		}
+	}
+	return false
+}
+
+func checkModels(s *sandbox, pluginID string) error {
+	served := s.modelIDs
+	declared, err := s.declaredModels(pluginID)
 	if err != nil {
 		return err
 	}
@@ -374,38 +542,38 @@ func (s *sandbox) assertModels() error {
 	// 清单声明的是裸 id; 断言按「前缀 id 或裸 id 命中其一」匹配。
 	var missing []string
 	for _, id := range declared {
-		prefixed := s.pluginID + "/" + id
+		prefixed := pluginID + "/" + id
 		if !served[id] && !served[prefixed] {
 			missing = append(missing, id)
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("静态清单声明了 %d 个模型, 但 /v1/models 少了 %d 个: %s",
-			len(declared), len(missing), strings.Join(missing, ", "))
+		return fmt.Errorf("插件 %s 的静态清单声明了 %d 个模型, 但 /v1/models 少了 %d 个: %s",
+			pluginID, len(declared), len(missing), strings.Join(missing, ", "))
 	}
-	fmt.Printf("[+] 断言通过: /v1/models 返回 %d 个模型, 清单声明的 %d 个全部在列\n",
-		len(served), len(declared))
+	fmt.Printf("[+] 断言通过: %s, /v1/models 返回 %d 个模型, 清单声明的 %d 个全部在列\n",
+		pluginID, len(served), len(declared))
 	return nil
 }
 
 // assertResourcePage 验证插件 resource 页面可被宿主服务 (面板 iframe 数据源)。
-func (s *sandbox) assertResourcePage() error {
-	body, status, err := s.httpGet("/v0/resource/plugins/"+s.pluginID+"/quota", false)
+func checkResource(s *sandbox, pluginID string) error {
+	body, status, err := s.httpGet("/v0/resource/plugins/"+pluginID+"/quota", false)
 	if err != nil {
 		return err
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("GET /v0/resource/plugins/%s/quota 返回 %d: %s", s.pluginID, status, truncate(body, 200))
+		return fmt.Errorf("GET /v0/resource/plugins/%s/quota 返回 %d: %s", pluginID, status, truncate(body, 200))
 	}
-	if !strings.Contains(body, s.pluginID) {
-		return fmt.Errorf("resource 页面内容不含 %q, 疑似服务了错误内容: %s", s.pluginID, truncate(body, 200))
+	if !strings.Contains(body, pluginID) {
+		return fmt.Errorf("resource 页面内容不含 %q, 疑似服务了错误内容: %s", pluginID, truncate(body, 200))
 	}
-	fmt.Println("[+] 断言通过: 插件 resource 页面已注册且可访问")
+	fmt.Printf("[+] 断言通过: 插件 %s 的 resource 页面已注册且可访问\n", pluginID)
 	return nil
 }
 
 // assertPluginMenus 验证管理面 plugins 列表暴露了插件菜单 (面板侧边栏入口)。
-func (s *sandbox) assertPluginMenus() error {
+func checkMenus(s *sandbox, pluginID string) error {
 	body, status, err := s.httpGet("/v0/management/plugins", true)
 	if err != nil {
 		return err
@@ -428,26 +596,26 @@ func (s *sandbox) assertPluginMenus() error {
 	}
 
 	for _, plugin := range payload.Plugins {
-		if plugin.ID != s.pluginID {
+		if plugin.ID != pluginID {
 			continue
 		}
 		if len(plugin.Menus) == 0 {
-			return fmt.Errorf("插件 %s 未注册任何菜单, 面板侧边栏不会显示", s.pluginID)
+			return fmt.Errorf("插件 %s 未注册任何菜单, 面板侧边栏不会显示", pluginID)
 		}
 		menus := make([]string, 0, len(plugin.Menus))
 		for _, menu := range plugin.Menus {
 			menus = append(menus, menu.Menu+" ("+menu.Path+")")
 		}
-		fmt.Printf("[+] 断言通过: 插件菜单已注册: %s\n", strings.Join(menus, ", "))
+		fmt.Printf("[+] 断言通过: %s 插件菜单已注册: %s\n", pluginID, strings.Join(menus, ", "))
 		return nil
 	}
-	return fmt.Errorf("/v0/management/plugins 列表中没有找到插件 %s", s.pluginID)
+	return fmt.Errorf("/v0/management/plugins 列表中没有找到插件 %s", pluginID)
 }
 
 // declaredModels 读取插件内嵌静态清单里声明的模型 id。
 // 插件可能按自身规则做过滤, 因此断言方向是「声明的必须都在」而不是「完全相等」。
-func (s *sandbox) declaredModels() ([]string, error) {
-	path := filepath.Join(s.pluginDir, "data", "static-config.json")
+func (s *sandbox) declaredModels(pluginID string) ([]string, error) {
+	path := filepath.Join(s.pluginDirs[pluginID], "data", "static-config.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -475,21 +643,22 @@ func (s *sandbox) declaredModels() ([]string, error) {
 	return ids, nil
 }
 
-func (s *sandbox) reportQuotaProvider() {
+func checkQuota(s *sandbox, pluginID string) error {
 	body, status, err := s.httpGet("/v0/management/quota/providers", true)
 	if err != nil || status != http.StatusOK {
-		return
+		return nil
 	}
-	if strings.Contains(body, `"`+s.pluginID+`"`) {
-		fmt.Println("[+] 断言通过: 额度提供方列表包含本插件")
-		return
+	if strings.Contains(body, `"`+pluginID+`"`) {
+		fmt.Printf("[+] 断言通过: %s 在额度提供方列表中\n", pluginID)
+		return nil
 	}
-	fmt.Println("[i] 额度提供方列表不含本插件 (未实现 QuotaProvider 时属正常)")
+	fmt.Printf("[i] 额度提供方列表不含 %s (未实现 QuotaProvider 时属正常)\n", pluginID)
+	return nil
 }
-func (s *sandbox) reportConfigFields() {
+func checkConfig(s *sandbox, pluginID string) error {
 	body, status, err := s.httpGet("/v0/management/plugins", true)
 	if err != nil || status != http.StatusOK {
-		return
+		return nil
 	}
 	var resp struct {
 		Plugins []struct {
@@ -501,22 +670,24 @@ func (s *sandbox) reportConfigFields() {
 		} `json:"plugins"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
-		return
+		return nil
 	}
 	for _, p := range resp.Plugins {
-		if p.ID == s.pluginID {
+		if p.ID == pluginID {
 			if len(p.ConfigFields) > 0 {
 				names := make([]string, 0, len(p.ConfigFields))
 				for _, f := range p.ConfigFields {
 					names = append(names, f.Name)
 				}
-				fmt.Printf("[+] 断言通过: 管理面返回 %d 个配置字段: %s\n", len(p.ConfigFields), strings.Join(names, ", "))
+				fmt.Printf("[+] 断言通过: %s 管理面返回 %d 个配置字段: %s\n",
+					pluginID, len(p.ConfigFields), strings.Join(names, ", "))
 			} else {
-				fmt.Println("[i] 管理面未返回可视化配置字段 (config_fields 为空)")
+				fmt.Printf("[i] %s 管理面未返回可视化配置字段 (config_fields 为空)\n", pluginID)
 			}
-			return
+			return nil
 		}
 	}
+	return nil
 }
 
 func (s *sandbox) httpGet(path string, management bool) (string, int, error) {
