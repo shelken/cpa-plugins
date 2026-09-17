@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -268,5 +269,65 @@ func TestCleanMessagesKeepsEmptyArgumentToolCall(t *testing.T) {
 	}
 	if content, _ := cleaned[1].Content.(string); content != "12:00" {
 		t.Fatalf("tool 结果 = %v, want 12:00", cleaned[1].Content)
+	}
+}
+
+// TestReasoningEffortPassthrough 逐档断言: 客户端给的档位原样写进上游 parameters。
+//
+// 档位透传是确定性契约, 钉在这里; 真机 `-scenarios effort` 比的是上游行为 (深度中位数),
+// 受上游噪声影响, 不承担这条判据 (见 .agents/skills/verify-cpa-plugin/features/chat.md)。
+func TestReasoningEffortPassthrough(t *testing.T) {
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	trueVal := true
+	cfg := &PluginConfig{Enabled: true, EnableModelPrefix: &trueVal, ModelPrefix: "qwenworkcn"}
+	const sessionID = "11111111-2222-3333-4444-555555555555"
+
+	tested := 0
+	for _, model := range m.Models {
+		if !model.SupportsReasoning {
+			continue
+		}
+		efforts := append([]string(nil), model.SupportedEfforts...)
+		if len(efforts) == 0 && model.DefaultReasoningEffort != "" {
+			efforts = []string{model.DefaultReasoningEffort}
+		}
+		if len(efforts) == 0 {
+			t.Fatalf("模型 %s 声明了 reasoning 却没有任何档位, 契约无从验证", model.ID)
+		}
+		for _, want := range append([]string{""}, efforts...) {
+			label := want
+			if label == "" {
+				label = "(缺省)"
+			}
+			t.Run(model.ID+"/"+label, func(t *testing.T) {
+				raw := fmt.Sprintf(
+					`{"model":"qwenworkcn/%s","messages":[{"role":"user","content":"hi"}],"reasoning_effort":%q}`,
+					model.ID, want)
+				_, body, err := buildChatRequestBody(cfg, []byte(raw), m, sessionID)
+				if err != nil {
+					t.Fatalf("buildChatRequestBody: %v", err)
+				}
+				var envBody map[string]any
+				if err := json.Unmarshal(body, &envBody); err != nil {
+					t.Fatalf("unmarshal envelope: %v", err)
+				}
+				params, _ := envBody["parameters"].(map[string]any)
+				got, _ := params["reasoning_effort"].(string)
+				expect := want
+				if expect == "" {
+					expect = model.DefaultReasoningEffort
+				}
+				if got != expect {
+					t.Fatalf("上游 parameters.reasoning_effort = %q, 期望 %q", got, expect)
+				}
+			})
+			tested++
+		}
+	}
+	if tested == 0 {
+		t.Fatal("没有任何模型被覆盖, 用例失去意义")
 	}
 }

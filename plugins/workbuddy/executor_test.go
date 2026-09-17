@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -473,5 +474,62 @@ func TestAggregateChatStreamMergesToolCallFragments(t *testing.T) {
 	}
 	if resp.Choices[0].FinishReason != "tool_calls" {
 		t.Errorf("finish_reason 应为 tool_calls, 实际 %q", resp.Choices[0].FinishReason)
+	}
+}
+
+// TestReasoningEffortPassthrough 逐档断言: 客户端给的档位原样写进上游请求。
+//
+// 档位透传是确定性契约, 钉在这里; 真机 `-scenarios effort` 比的是上游行为 (深度中位数),
+// 受上游噪声影响, 不承担这条判据 (见 .agents/skills/verify-cpa-plugin/features/chat.md)。
+func TestReasoningEffortPassthrough(t *testing.T) {
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	cfg := mustParseConfig(t, nil)
+
+	tested := 0
+	for _, model := range m.Models {
+		if !model.SupportsReasoning {
+			continue
+		}
+		efforts := append([]string(nil), model.SupportedEfforts...)
+		if len(efforts) == 0 && model.DefaultReasoningEffort != "" {
+			efforts = []string{model.DefaultReasoningEffort}
+		}
+		if len(efforts) == 0 {
+			t.Fatalf("模型 %s 声明了 reasoning 却没有任何档位, 契约无从验证", model.ID)
+		}
+		for _, want := range append([]string{""}, efforts...) {
+			label := want
+			if label == "" {
+				label = "(缺省)"
+			}
+			t.Run(model.ID+"/"+label, func(t *testing.T) {
+				raw := fmt.Sprintf(
+					`{"model":"workbuddy/%s","messages":[{"role":"user","content":"hi"}],"reasoning_effort":%q}`,
+					model.ID, want)
+				body, err := prepareChatRequestBody(cfg, []byte(raw), m, &ProfileConfig{}, true)
+				if err != nil {
+					t.Fatalf("prepareChatRequestBody: %v", err)
+				}
+				var out map[string]any
+				if err := json.Unmarshal(body, &out); err != nil {
+					t.Fatalf("unmarshal body: %v", err)
+				}
+				got, _ := out["reasoning_effort"].(string)
+				expect := want
+				if expect == "" {
+					expect = model.DefaultReasoningEffort
+				}
+				if got != expect {
+					t.Fatalf("上游 reasoning_effort = %q, 期望 %q", got, expect)
+				}
+			})
+			tested++
+		}
+	}
+	if tested == 0 {
+		t.Fatal("没有任何模型被覆盖, 用例失去意义")
 	}
 }

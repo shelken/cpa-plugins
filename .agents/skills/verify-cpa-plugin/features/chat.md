@@ -45,7 +45,7 @@
 | 用量上报 | 流式轮次的 `usage` 非空; 只在缺失时记 FAIL, 有则归入该轮健康判据的明细 (缓存判据的前置), 覆盖轮次2/3 与探针二次 |
 | 多轮缓存(轮次2/轮次3) | 第二轮起缓存命中数大于 0 |
 | 重复请求缓存(二次) | 同一请求连发两次, 第二次命中数大于 0 |
-| 思考深度传递 | 高档思考量大于低档 (档位无数值差异时 WARN); 上游没回报 `reasoning_tokens` 时回落到比较推理正文字数, 两者都分不出档位才 FAIL |
+| 思考深度传递 | 最低档与最高档各采样 3 次比中位数: 高档中位大于低档为 PASS; 相等或反序记 WARN (上游未按档位加深, 透传契约由 plugins/<id> 单测钉住); 仅在两档所有采样都没有任何思考输出时 FAIL (思考链路失效)。全采样有 reasoning_tokens 时按 tokens 比, 否则退到推理正文字数 |
 | 非流式链路 | 单条完整响应, `object` 为 `chat.completion`, 带 `finish_reason`; `usage` 缺失不判 FAIL |
 | 工具调用 流式 | 带 `tools` 与 `tool_choice:auto` 的请求返回 `finish_reason:"tool_calls"`, 每个调用带非空 `id` 与函数名, `arguments` 是合法 JSON |
 | 工具调用 非流式 | 同一请求走聚合路径后仍带 `tool_calls` 与合法 `arguments` |
@@ -114,3 +114,4 @@ Preconditions:
 - `403 code 11140 request illegal` -> 该形态曾因账号不可用产生 (postmortems/003), 未用可用账号复现前不要据此改字段
 - 桌面档与 CLI 档头部不同 -> 两者不可混用, 默认取桌面档
 - 日志边界 -> 见 `docs/adr/plugins/workbuddy/0002`, 只记方法、路径、状态码、耗时与模型名, 不记请求体与回复正文
+- 别拿单次采样判档位深度 -> 同一档位内思考量方差极大 (如同一模型同一 prompt 在 low 档一次 100+ tokens 一次 1000+ tokens, 甚至大于档位间差异), 单样本比较是掷硬币; 必须多采样取中位比。插件透传契约由 plugins/<id>/executor_test.go 逐档断言钉住, 真机测试仅反映上游行为

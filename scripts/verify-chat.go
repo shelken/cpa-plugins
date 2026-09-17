@@ -39,7 +39,7 @@ var scenarioRegistry = []scenario{
 	{"probe", 2, "重复请求缓存: 同一请求连发两次, 第二次应命中前缀缓存", runProbe},
 	{"nonstream", 1, "非流式链路: 插件聚合上游流式后返回完整 chat.completion", runNonStream},
 	{"tools", 3, "工具调用: 定义透传 / 非流式聚合 / 工具结果消费", runTools},
-	{"effort", 2, "思考深度与思维链: 最低档与最高档对比", runEffort},
+	{"effort", 2 * effortSamples, "思考深度与思维链: 最低档与最高档各采样取中位", runEffort},
 	{"guard", 1, "模型守卫: 未知模型 id 在路由阶段被拒 (不进入凭据与上游)", runGuard},
 }
 
@@ -773,7 +773,17 @@ func runGuard(s *session) {
 	s.record("未知模型拒绝", "PASS", "未知模型在路由阶段被拒 (400 model_not_found), 未进入凭据与上游阶段")
 }
 
-// runEffort 对比最低档与最高档: 思考深度有没有真的传到上游。
+// effortSamples 每档采样次数。上游的档位深度差异小于同档内的方差 (同一档位一次能到
+// 1000+ tokens, 另一次 100+), 单样本比较等于掷硬币。见 postmortems/009 与本文件同目录的
+// 定位记录; 档位值本身有没有透传由插件单测钉住 (不靠这里)。
+const effortSamples = 3
+
+// runEffort 对比最低档与最高档的思考量中位数。
+//
+// 判据边界: 这里判的是上游行为。插件是否把客户端档位原样送到上游是确定性契约, 由
+// plugins/<id> 的单测覆盖 (`parameters.reasoning_effort` 逐档断言), 不在此判。
+// 因此本判据只在「思考链路整体失效」(两档都没有任何思考输出) 与请求失败时 FAIL,
+// 档位反序/无差异记 WARN 并列出样本。
 func runEffort(s *session) {
 	if s.modelDef == nil || len(s.modelDef.SupportedEfforts) == 0 {
 		fmt.Println("[思考深度] 跳过: 清单未声明该模型的档位")
@@ -783,61 +793,121 @@ func runEffort(s *session) {
 	efforts := append([]string(nil), s.modelDef.SupportedEfforts...)
 	sort.Slice(efforts, func(i, j int) bool { return effortRank(efforts[i]) < effortRank(efforts[j]) })
 	low, high := efforts[0], efforts[len(efforts)-1]
-	fmt.Printf("[思考深度] 对比 reasoning_effort=%s 与 %s\n", low, high)
+	fmt.Printf("[思考深度] 对比 reasoning_effort=%s 与 %s (每档 %d 次采样, 比中位数)\n", low, high, effortSamples)
 
 	prompt := []chatMessage{{Role: "user", Content: "在 1 到 300 之间, 有多少个整数的十进制写法里出现过字符 7? 先推演再给结论, 结论单独一行写 答案=N"}}
-	lowTurn, lowErr := s.chat(chatRequest{messages: prompt, effort: low, stream: true})
-	checkTurn(s, "低档 "+low, lowTurn, lowErr)
-	highTurn, highErr := s.chat(chatRequest{messages: prompt, effort: high, stream: true})
-	checkTurn(s, "高档 "+high, highTurn, highErr)
-	if highErr == nil {
-		checkCoT(s, highTurn)
+
+	collect := func(effort, label string) ([]effortSample, turn, error) {
+		samples := make([]effortSample, 0, effortSamples)
+		var last turn
+		var lastErr error
+		for i := 1; i <= effortSamples; i++ {
+			t, err := s.chat(chatRequest{messages: prompt, effort: effort, stream: true})
+			checkTurn(s, fmt.Sprintf("%s %s #%d", label, effort, i), t, err)
+			tokens := 0
+			if t.usage != nil {
+				tokens = t.usage.CompletionDetails.ReasoningTokens
+			}
+			samples = append(samples, effortSample{tokens: tokens, chars: len([]rune(t.reasoning))})
+			last, lastErr = t, err
+		}
+		return samples, last, lastErr
 	}
 
-	lowReasoning, highReasoning := -1, -1
-	// 上游不报 reasoning_tokens 时 usage 里该字段就是 0, 直接赋值会让 -1 哨兵失效,
-	// 下面的「按推理字数回落」分支永远不可达。只在真有取值时才赋。
-	if lowTurn.usage != nil && lowTurn.usage.CompletionDetails.ReasoningTokens > 0 {
-		lowReasoning = lowTurn.usage.CompletionDetails.ReasoningTokens
+	lowSamples, _, lowErr := collect(low, "低档")
+	highSamples, highTurn, highErr := collect(high, "高档")
+	if lowErr != nil || highErr != nil {
+		s.record("思考深度传递", "FAIL", "有采样请求未成功, 无法比较")
+		return
 	}
-	if highTurn.usage != nil && highTurn.usage.CompletionDetails.ReasoningTokens > 0 {
-		highReasoning = highTurn.usage.CompletionDetails.ReasoningTokens
-	}
-	lowChars := len([]rune(lowTurn.reasoning))
-	highChars := len([]rune(highTurn.reasoning))
+	checkCoT(s, highTurn)
 
+	unit := reasoningUnit(lowSamples, highSamples)
+	if unit == "" {
+		s.record("思考深度传递", "FAIL",
+			fmt.Sprintf("两档各 %d 次采样都没有任何思考输出 (%s %s / %s %s): 思考链路失效",
+				effortSamples, low, describeSamples(lowSamples, "tokens"), high, describeSamples(highSamples, "tokens")))
+		return
+	}
+	lowMedian := median(valuesIn(lowSamples, unit))
+	highMedian := median(valuesIn(highSamples, unit))
+	lowDesc := fmt.Sprintf("%s %s 中位 %.1f", low, describeSamples(lowSamples, unit), lowMedian)
+	highDesc := fmt.Sprintf("%s %s 中位 %.1f", high, describeSamples(highSamples, unit), highMedian)
+	fmt.Printf("[思考深度] %s\n[思考深度] %s\n", lowDesc, highDesc)
+
+	note := "档位透传由插件单测钉住, 这里只反映上游行为"
 	switch {
-	case lowErr != nil || highErr != nil:
-		s.record("思考深度传递", "FAIL", "请求未成功, 无法比较")
-	case lowReasoning >= 0 && highReasoning >= 0:
-		switch {
-		case highReasoning > lowReasoning:
-			s.record("思考深度传递", "PASS",
-				fmt.Sprintf("reasoning_tokens %s=%d < %s=%d", low, lowReasoning, high, highReasoning))
-		case highReasoning == lowReasoning:
-			s.record("思考深度传递", "WARN",
-				fmt.Sprintf("两档 reasoning_tokens 相同(%d), 可能是采样波动, 也可能档位没传到上游", highReasoning))
-		default:
-			s.record("思考深度传递", "FAIL",
-				fmt.Sprintf("高档推理反而更少: %s=%d > %s=%d", low, lowReasoning, high, highReasoning))
-		}
+	case highMedian > lowMedian:
+		s.record("思考深度传递", "PASS", fmt.Sprintf("中位 %s=%.1f < %s=%.1f (%s)", low, lowMedian, high, highMedian, unit))
+	case highMedian == lowMedian:
+		s.record("思考深度传递", "WARN", fmt.Sprintf("两档中位相同 (%.1f%s), 上游未区分档位; %s", highMedian, unit, note))
 	default:
-		// 上游没回报 usage 时退到推理正文长度: 档位有没有传到上游, 从推理量仍看得出来。
-		switch {
-		case lowChars == 0 || highChars == 0:
-			s.record("思考深度传递", "FAIL",
-				fmt.Sprintf("两档都没有 reasoning_tokens, 推理正文也是空的 (low=%d 字, high=%d 字)", lowChars, highChars))
-		case highChars > lowChars:
-			s.record("思考深度传递", "PASS",
-				fmt.Sprintf("usage 缺失, 按推理字数比较: %s=%d 字 < %s=%d 字", low, lowChars, high, highChars))
-		case highChars == lowChars:
-			s.record("思考深度传递", "WARN",
-				fmt.Sprintf("usage 缺失, 两档推理字数相同(%d), 分不出档位", highChars))
-		default:
-			s.record("思考深度传递", "FAIL",
-				fmt.Sprintf("usage 缺失, 高档推理反而更少: %s=%d 字 > %s=%d 字", low, lowChars, high, highChars))
+		s.record("思考深度传递", "WARN",
+			fmt.Sprintf("上游未按档位加深: 中位 %s=%.1f > %s=%.1f (%s); %s", low, lowMedian, high, highMedian, unit, note))
+	}
+}
+
+// effortSample 一档一次的思考量: 上游上报的 reasoning_tokens 与流里的推理正文字数。
+type effortSample struct {
+	tokens int
+	chars  int
+}
+
+// reasoningUnit 决定比较口径: 两档所有采样都上报了 reasoning_tokens 就按 tokens 比,
+// 否则退到推理正文字数; 两者都为零时返回 "", 由调用方判失效。
+func reasoningUnit(low, high []effortSample) string {
+	all := append(append([]effortSample{}, low...), high...)
+	allTokens := true
+	for _, s := range all {
+		if s.tokens <= 0 {
+			allTokens = false
 		}
 	}
+	if allTokens {
+		return "tokens"
+	}
+	for _, s := range all {
+		if s.chars > 0 {
+			return "字"
+		}
+	}
+	return ""
+}
+
+func valuesIn(samples []effortSample, unit string) []float64 {
+	out := make([]float64, 0, len(samples))
+	for _, s := range samples {
+		if unit == "字" {
+			out = append(out, float64(s.chars))
+			continue
+		}
+		out = append(out, float64(s.tokens))
+	}
+	return out
+}
+
+func median(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sort.Float64s(values)
+	n := len(values)
+	if n%2 == 1 {
+		return values[n/2]
+	}
+	return (values[n/2-1] + values[n/2]) / 2
+}
+
+func describeSamples(samples []effortSample, unit string) string {
+	parts := make([]string, 0, len(samples))
+	for _, s := range samples {
+		if unit == "字" {
+			parts = append(parts, fmt.Sprintf("%d", s.chars))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%d", s.tokens))
+	}
+	return "[" + strings.Join(parts, " ") + "]"
 }
 
 func checkTurn(s *session, label string, t turn, err error) {
