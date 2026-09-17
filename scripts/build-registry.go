@@ -11,15 +11,15 @@ import (
 )
 
 type Plugin struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Author       string   `json:"author"`
-	Version      string   `json:"version"`
-	Repository   string   `json:"repository,omitempty"`
-	Homepage     string   `json:"homepage,omitempty"`
-	License      string   `json:"license,omitempty"`
-	Tags         []string `json:"tags,omitempty"`
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	Description  string      `json:"description"`
+	Author       string      `json:"author"`
+	Version      string      `json:"version"`
+	Repository   string      `json:"repository,omitempty"`
+	Homepage     string      `json:"homepage,omitempty"`
+	License      string      `json:"license,omitempty"`
+	Tags         []string    `json:"tags,omitempty"`
 	AuthRequired bool        `json:"auth_required,omitempty"`
 	Install      interface{} `json:"install,omitempty"`
 }

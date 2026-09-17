@@ -66,6 +66,7 @@ func platformExtension(goos string) string {
 func archiveName(id, version, goos, goarch string) string {
 	return fmt.Sprintf("%s_%s_%s_%s.zip", id, version, goos, goarch)
 }
+
 var reGoVersionLiteral = regexp.MustCompile(`(\bVersion:\s*)"([0-9]+\.[0-9]+\.[0-9]+[^"]*)"`)
 
 // ---------------- 变更集 ----------------
