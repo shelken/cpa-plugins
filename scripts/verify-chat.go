@@ -795,10 +795,12 @@ func runEffort(s *session) {
 	}
 
 	lowReasoning, highReasoning := -1, -1
-	if lowTurn.usage != nil {
+	// 上游不报 reasoning_tokens 时 usage 里该字段就是 0, 直接赋值会让 -1 哨兵失效,
+	// 下面的「按推理字数回落」分支永远不可达。只在真有取值时才赋。
+	if lowTurn.usage != nil && lowTurn.usage.CompletionDetails.ReasoningTokens > 0 {
 		lowReasoning = lowTurn.usage.CompletionDetails.ReasoningTokens
 	}
-	if highTurn.usage != nil {
+	if highTurn.usage != nil && highTurn.usage.CompletionDetails.ReasoningTokens > 0 {
 		highReasoning = highTurn.usage.CompletionDetails.ReasoningTokens
 	}
 	lowChars := len([]rune(lowTurn.reasoning))
