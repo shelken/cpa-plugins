@@ -9,3 +9,4 @@
 - [007 · 验证信号与写入点分离诱发空提交事故](./007-quota-release-badge-vs-target-state.md)
 - [008 · 沙箱管理面取钥链路断裂与验证口径虚报](./008-sandbox-management-key-break.md)
 - [009 · 拿复述型提示词判思考输出](./009-cot-judgement-wrong-anchor.md)
+- [010 · 并发发版 record 回填竞态与哈希丢失](./010-release-record-race-and-backfill-loss.md)
