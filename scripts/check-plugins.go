@@ -346,6 +346,10 @@ func checkChangesets(r *report, baseRef string) {
 			// 版本与产物地址是 release.go 写出来的产物, 不代表有人改了插件
 			continue
 		}
+		if strings.HasSuffix(parts[len(parts)-1], "_test.go") {
+			// 单元测试不进入发布动态库, 不触发版本变更集门禁
+			continue
+		}
 		codeChanges[id] = true
 	}
 
