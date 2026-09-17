@@ -67,7 +67,7 @@ go run scripts/dev-sandbox.go -plugin workbuddy -plugin qwenworkcn -checks load,
 - 就绪判据: 输出包含 `[+] 沙箱验证通过` 与断言提示, 宿主默认监听 `18317`
 - 启动前要求 18317 空闲: 脚本会预检, 被占用直接报错退出 (宿主先打「就绪」日志再 bind, 不预检就会拿别人的实例做断言); 遇到报错按 Cleanup 第 1 条找并杀掉占用者
 - 需要保留宿主进程时传 `-keep`, 脚本退出时输出宿主 pid 与端口
-- 沙箱宿主不依赖凭据即可驱动 `/v1/models` 等接口, 真实对话与额度需要注入凭据 (见 features/auth.md)
+- 沙箱宿主不依赖凭据即可驱动 `/v1/models` 等接口, 真实对话与额度需要注入凭据 (见 features/auth.md)。沙箱目录每次启动都会重建, 凭据**必须在宿主就绪之后**注入 (启动前放进去的会被清掉, 症状是列表为空且对话 503 `auth_not_found`)
 - 无论哪种启动方式, 验收结束必须按 Cleanup 清单清理
 
 隔离性: 沙箱配置、端口、管理密钥按插件集合隔离在 `~/.cache/cpa-plugins/sandbox/<ids>/` 下, 与生产实例互不影响; 不要对生产实例做写操作驱动, 写操作只进沙箱
@@ -147,7 +147,12 @@ go run scripts/verify-chat.go -list    # 列出场景与请求成本
 
 每次验收结束 (无论成败) 必须执行, 全部做完才算收尾:
 
-1. 杀沙箱宿主进程: `pkill -f "cliproxyapi -config.*sandbox/<id>"`, 杀完用 `pgrep -f cliproxyapi` 确认无本沙箱残留。多插件的沙箱目录是 `<id1>+<id2>` 形态, 模式要按实际目录名写
+1. 杀沙箱宿主进程: `pkill -f "cliproxyapi -config.*sandbox/<id>"`, 杀完用 `pgrep -f cliproxyapi` 确认无本沙箱残留。多插件的沙箱目录是 `<id1>+<id2>` 形态, 模式要按实际目录名写, **但 `+` 在 `pkill` 的模式里是正则量词**: 照抄 `workbuddy+qwenworkcn` 会一条都匹配不上, 表现为 `pkill` 无报错、进程还在、下一轮沙箱被端口预检拦下。把 `+` 写成 `.` 或转义成 `\+`, 并等进程真的退出再启动下一轮:
+   ```bash
+   PID=$(pgrep -f 'sandbox/workbuddy.qwenworkcn' | head -1)
+   pkill -f 'sandbox/workbuddy.qwenworkcn'; pidwait $PID
+   pkill -f "cliproxyapi -config.*sandbox/<id>"; pgrep -fl cliproxyapi   # 确认无残留
+   ```
 2. 删临时凭据: 注入沙箱的凭据 JSON 与密钥中转文件全部删除, 含整个沙箱目录 `~/.cache/cpa-plugins/sandbox/<ids>/`; 严禁删除生产宿主凭据目录里的真实凭据
 3. 删临时脚本与产物: 驱动脚本、mock 上游、修改过的 static-config 副本、抓包日志
 4. 恢复外部状态: 验证时 PUT 过的插件配置改回原值; 悬挂登录会话用 `DELETE /v0/management/oauth-session?state=<state>` 注销

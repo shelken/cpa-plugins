@@ -43,6 +43,13 @@ Preconditions:
 
 - **二次确认凭据归属。** 登录成功后重跑第一步的查询, 新条目 `provider` 与 `status` 满足判据; 这次查询同时是凭据落盘的副作用证明
 
+- **把生产凭据搬进沙箱 (真机对话验收的前置)。** 沙箱 `auth/` 目录每次启动都会重建, 所以搬运必须在宿主就绪之后做; 又因为凭据值经任何回显通道都会被打码 (取到打码值直接上线会 401), 下载与上传要在同一个进程里完成, 中间值不落盘、不回显:
+  ```text
+  生产  GET  /v0/management/auth-files/download?name=<file>   # 原样返回凭据 JSON, 此处不做打码
+  沙箱  POST /v0/management/auth-files?name=<file>            # body 即上一步原文
+  ```
+  两端鉴权分别用生产密钥 (由 `sec-run python3` 注入 `CPA_TOKEN`) 与沙箱密钥 (读 `-token-file` 同路径), 打印只留文件名与字节数。搬完按上一条再查一次沙箱 `auth-files`, 判据同样是 `provider` 与 `status` 为 `active`
+
 ## Gotchas
 
 - 已登录但调用报 unknown provider -> 查 `auth-files` 对应条目的 `provider` 是否与插件 id 一致
