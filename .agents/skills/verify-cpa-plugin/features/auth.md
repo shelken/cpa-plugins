@@ -25,7 +25,7 @@ Preconditions:
 - 插件已启用 (`effective_enabled` 为 `true`)
 - 管理面鉴权接口可达
 
-- **查询已有凭据。** 确认当前凭据与渠道归属 (`account_type` 对插件渠道恒为 null, 宿主从 StorageJSON 凭据推导不出类型, 不作判据):
+- **查询已有凭据。** 确认当前凭据与渠道归属 (`account_type` 由宿主按凭据里的 OAuth 元数据推导, 插件渠道实测为 `oauth`; 不作为「是否已登录」的判据, 只看 `provider` 与 `status`):
   ```bash
   go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/auth-files | jq '.files[] | {id, provider, status}'
   ```
@@ -36,7 +36,7 @@ Preconditions:
   go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/<provider>-auth-url
   ```
 
-- **检查登录结果。** 外部扫码确认后轮询直至 `status` 为 `ok`; 未扫码中间态是 `wait` (宿主把插件内部的 `pending` 转换成 `wait`), 断言 `pending` 会误报:
+- **检查登录结果。** 外部扫码确认后轮询直至 `status` 为 `ok`; 未扫码中间态是 `wait` (宿主把插件内部的 `pending` 转换成 `wait`), 断言 `pending` 会误报。`state` 未知或过期时接口仍返回 `HTTP 200`, 但 body 是 `{"status":"error","error":"unknown or expired state"}`——所以判据读 body 里的 `status` 字段, 不能只看状态码:
   ```bash
   go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/get-auth-status?state=<state>'
   ```
@@ -47,5 +47,5 @@ Preconditions:
 
 - 已登录但调用报 unknown provider -> 查 `auth-files` 对应条目的 `provider` 是否与插件 id 一致
 - 鉴权失败后请求直接 503 -> 宿主触发凭据失败冷却熔断, 等冷却结束或重启宿主; 冷却期失败不能当功能失败
-- 登录中途终止残留悬挂会话 -> `go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/oauth-session?state=<state>' -method DELETE` 释放服务端会话; 脚本默认 GET, 缺 `-method DELETE` 会 404
+- 登录中途终止残留悬挂会话 -> `go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/oauth-session?state=<state>' -method DELETE` 释放服务端会话; 脚本默认 GET, 缺 `-method DELETE` 会 404; 缺 `state` 返回 `400 missing state`, 成功返回 `{"status":"ok","cancelled":true}`
 - 登录链路驱动沙箱时管理密钥用 `-token-file`, 生产密钥对沙箱必然 401

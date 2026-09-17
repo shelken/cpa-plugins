@@ -40,6 +40,7 @@ var scenarioRegistry = []scenario{
 	{"nonstream", 1, "非流式链路: 插件聚合上游流式后返回完整 chat.completion", runNonStream},
 	{"tools", 3, "工具调用: 定义透传 / 非流式聚合 / 工具结果消费", runTools},
 	{"effort", 2, "思考深度与思维链: 最低档与最高档对比", runEffort},
+	{"guard", 1, "模型守卫: 未知模型 id 在路由阶段被拒 (不进入凭据与上游)", runGuard},
 }
 
 // defaultScenarios 是「没有指定场景」时的执行集, 刻意不含 tools/effort:
@@ -384,11 +385,17 @@ type chatRequest struct {
 	effort   string
 	stream   bool
 	tools    []toolSpec
+	// model 覆盖本次请求的模型 id (缺省用 runner 的被测模型), 供未知模型守卫场景使用。
+	model string
 }
 
 func (r *runner) chat(req chatRequest) (turn, error) {
+	model := r.model
+	if strings.TrimSpace(req.model) != "" {
+		model = req.model
+	}
 	payload := map[string]any{
-		"model":    r.model,
+		"model":    model,
 		"messages": req.messages,
 		"stream":   req.stream,
 	}
@@ -737,6 +744,33 @@ func runNonStream(s *session) {
 func runTools(s *session) {
 	fmt.Println("[工具调用] 工具定义透传 + 工具结果消费")
 	checkTools(s)
+}
+
+// runGuard 验证宿主只接受自己报送过的模型 id: 未知 id 必须在路由阶段被拒
+// (400 model_not_found), 不进入凭据与上游阶段。对照: 同一沙箱里合法模型会走到
+// auth_not_found (无凭据时 503), 说明二者在宿主里的处理阶段不同。
+func runGuard(s *session) {
+	fmt.Println("[模型守卫] 未知模型 id 应由宿主拒绝")
+	unknown := s.model + "-not-a-real-model"
+	t, err := s.chat(chatRequest{
+		messages: []chatMessage{{Role: "user", Content: "只回复 OK"}},
+		model:    unknown,
+	})
+	if err == nil {
+		s.record("未知模型拒绝", "FAIL",
+			fmt.Sprintf("未知模型 %s 未被拒绝 (HTTP %d), 未在路由阶段拦下", unknown, t.status))
+		return
+	}
+	if t.status != http.StatusBadRequest {
+		s.record("未知模型拒绝", "FAIL",
+			fmt.Sprintf("未知模型 %s 返回 HTTP %d, 期望 400: %s", unknown, t.status, truncate(t.rawHead, 80)))
+		return
+	}
+	if !strings.Contains(t.rawHead, "model_not_found") {
+		s.record("未知模型拒绝", "FAIL", "拒绝理由不是 model_not_found: "+truncate(t.rawHead, 80))
+		return
+	}
+	s.record("未知模型拒绝", "PASS", "未知模型在路由阶段被拒 (400 model_not_found), 未进入凭据与上游阶段")
 }
 
 // runEffort 对比最低档与最高档: 思考深度有没有真的传到上游。

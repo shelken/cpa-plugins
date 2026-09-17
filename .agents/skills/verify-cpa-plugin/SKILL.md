@@ -65,6 +65,7 @@ go run scripts/dev-sandbox.go -plugin workbuddy -plugin qwenworkcn -checks load,
 ```
 
 - 就绪判据: 输出包含 `[+] 沙箱验证通过` 与断言提示, 宿主默认监听 `18317`
+- 启动前要求 18317 空闲: 脚本会预检, 被占用直接报错退出 (宿主先打「就绪」日志再 bind, 不预检就会拿别人的实例做断言); 遇到报错按 Cleanup 第 1 条找并杀掉占用者
 - 需要保留宿主进程时传 `-keep`, 脚本退出时输出宿主 pid 与端口
 - 沙箱宿主不依赖凭据即可驱动 `/v1/models` 等接口, 真实对话与额度需要注入凭据 (见 features/auth.md)
 - 无论哪种启动方式, 验收结束必须按 Cleanup 清单清理
@@ -110,12 +111,14 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models
 ```
 
-对话链路验收用专用入口, 按场景选择要跑的判据 (流式帧、上下文记忆、缓存、思考深度、非流式、工具调用各为一个场景, 见 features/chat.md 与「验证范围」节):
+对话链路验收用专用入口, 按场景选择要跑的判据 (流式帧、上下文记忆、缓存、思考深度、非流式、工具调用、未知模型各为一个场景, 见 features/chat.md 与「验证范围」节):
 
 ```bash
 go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> -scenarios session,nonstream
 go run scripts/verify-chat.go -list    # 列出场景与请求成本
 ```
+
+`guard` 场景发一个未报送的模型 id, 断言宿主在路由阶段拒绝 (400 `model_not_found`); 它不消耗上游额度, 改了模型注册/路由/清单装载时点名它。
 
 ## 密钥纪律
 
@@ -144,19 +147,21 @@ go run scripts/verify-chat.go -list    # 列出场景与请求成本
 
 每次验收结束 (无论成败) 必须执行, 全部做完才算收尾:
 
-1. 杀沙箱宿主进程: `pkill -f "cliproxyapi -config.*sandbox/<id>"`, 杀完用 `pgrep -f cliproxyapi` 确认无本沙箱残留
-2. 删临时凭据: 注入沙箱的凭据 JSON 与密钥中转文件全部删除, 含整个沙箱目录 `~/.cache/cpa-plugins/sandbox/<id>/`; 严禁删除生产宿主凭据目录里的真实凭据
+1. 杀沙箱宿主进程: `pkill -f "cliproxyapi -config.*sandbox/<id>"`, 杀完用 `pgrep -f cliproxyapi` 确认无本沙箱残留。多插件的沙箱目录是 `<id1>+<id2>` 形态, 模式要按实际目录名写
+2. 删临时凭据: 注入沙箱的凭据 JSON 与密钥中转文件全部删除, 含整个沙箱目录 `~/.cache/cpa-plugins/sandbox/<ids>/`; 严禁删除生产宿主凭据目录里的真实凭据
 3. 删临时脚本与产物: 驱动脚本、mock 上游、修改过的 static-config 副本、抓包日志
 4. 恢复外部状态: 验证时 PUT 过的插件配置改回原值; 悬挂登录会话用 `DELETE /v0/management/oauth-session?state=<state>` 注销
 5. 证据先落盘 `~/.cache/cpa-plugins/evidence/<plugin>/`, 再执行上述删除
 
-跳过清理的后果: 残留宿主进程占住 18317 端口让下次沙箱起不来; 残留凭据让下轮验证误判「已登录」; 残留 mock 上游让后续请求打到假服务得出假结论
+端口冲突是清理缺口的直接症状: 上一轮 `-keep` 的宿主会一直占着 18317, 下一轮沙箱会在启动后因端口被占而退出; 脚本已加端口预检, 遇到报错先 `lsof -nP -iTCP:18317 -sTCP:LISTEN` 找占用者, 杀掉再跑, 不要改端口绕过。
+
+跳过清理的后果: 残留宿主进程占住 18317 端口让下次沙箱起不来 (脚本预检会拦下), 若绕过预检则断言会打到那个陌生实例上, 得出与本次插件无关的结论; 残留凭据让下轮验证误判「已登录」; 残留 mock 上游让后续请求打到假服务得出假结论
 
 ## Helpers
 
 - `scripts/management-api.go`: 管理面单点交互工具, 默认由 `sec-run` 注入 `CPA_TOKEN` 鉴权, 沙箱场景用 `-token-file` 读沙箱密钥, 响应里的密钥与凭据字段默认打码; `-auth client` 时改为按客户端身份访问 `/v1`, 客户端密钥由进程自己从管理面取; `-body-file` 从文件读请求体, 用于凭据上传
 - `scripts/verify-chat.go`: 对话链路验收入口, `-scenarios` 选场景 (`-list` 打印清单); 判据项见 features/chat.md
-- `scripts/dev-sandbox.go`: 沙箱启动与装载断言套件, `-plugin` 可重复传参一次起多个插件, `-checks` 选断言 (`-checks list` 打印清单); 只覆盖装载与报送, 替代不了真机对话验收
+- `scripts/dev-sandbox.go`: 沙箱启动与装载断言套件, `-plugin` 可重复传参一次起多个插件, `-checks` 选断言 (`-checks list` 打印清单); 只覆盖装载与报送, 替代不了真机对话验收。启动前会检查端口空闲, 被占用直接报错而非拿陌生实例做断言
 - `scripts/check-plugins.go`: 检查仓库清单、构建矩阵、声明平台一致性
 - `scripts/verify-registry-install.go`: 在线拉取已发布产物校验哈希与动态库格式
 

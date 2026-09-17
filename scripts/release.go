@@ -12,18 +12,20 @@ package main
 //	go run scripts/release.go record  --plugin <id> [--dist dist]
 //
 // version 消费变更集, 计算并更新 plugin.json 版本与产物地址, 同步 Go 版本字面量。
-// pack    构建当前平台动态库, 打成宿主契约命名的 zip, 打印 sha256 与 size。
+// pack    构建当前平台动态库, 打成宿主契约命名的 zip, 打印 sha256 与 size; 产物用于本地预检,
+//         只有在确实被上传发布时才能据其回填哈希。
 // record  读取 dist 下已有 zip, 把 sha256 回填进 plugin.json, 再重建 registry.json。
-// 推荐发布流程。哈希必须来自**真实上传的产物**, 否则安装时报 checksum mismatch:
+//         只用于本地预检; 正式回填由 CI 的 record 作业在标签发布后执行。
+//
+// 发布流程 (哈希必须来自真实上传的产物, 否则安装时报 checksum mismatch):
 //
 //	go run scripts/check-plugins.go --release-ready          # 发布前门禁
-//	git tag workbuddy/v0.1.0 && git push origin workbuddy/v0.1.0
-//	gh release download workbuddy/v0.1.0 --pattern '*.zip' --dir dist
-//	go run scripts/release.go record --plugin workbuddy --dist dist
-//	git add plugins/workbuddy/plugin.json registry.json && git commit
+//	go run scripts/release.go pack --plugin <id> --out dist  # 本地预检包结构与命名
+//	git tag <id>/v<X.Y.Z> && git push origin main <id>/v<X.Y.Z>
 //
-// pack 用于本地预检包结构与命名是否满足宿主契约; 其产物只有在确实被上传发布时,
-// 才可以据其回填哈希。
+// 标签触发流水线后, 由 CI 的 record 作业下载真实产物并回填 plugin.json 与 registry.json。
+// 禁止本地代填: 本机 pack 的产物未上传, 用它回填会让安装校验失败; 失败恢复用重打标签,
+// 见 docs/how-to/plugin-release.md。多插件发版逐个推标签, 等上一条 record 完成再推下一个。
 //
 // 说明: 只支持为当前平台打包。c-shared 是 CGO 构建, 交叉编译需要目标平台的 C 工具链,
 // 因此 CI 用各平台原生运行器分别构建, 本地同理只构建本机平台。

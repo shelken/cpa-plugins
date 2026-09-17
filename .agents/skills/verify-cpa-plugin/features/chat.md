@@ -24,6 +24,7 @@
 | `nonstream` | 非流式链路 | 改了流式聚合、`stream:false` 路径 |
 | `tools` | 工具调用 流式/非流式、工具结果消费 | 改了工具字段透传、分片拼接 |
 | `effort` | 思维链输出、思考深度传递 | 改了推理档位映射、`reasoning_effort` 传递 |
+| `guard` | 未知模型拒绝 | 改了模型注册、路由或清单装载 |
 
 默认 (不传 `-scenarios`) 只跑 `session,nonstream`: 二者成本最低且覆盖请求构造主路径。场景按注册顺序执行, 与书写顺序无关。
 
@@ -31,7 +32,9 @@
 
 ## 判据
 
-`verify-chat.go` 一次跑完全部判据, 任一 FAIL 即对话链路不可用:
+判据只在本场景被点名时执行 (见上一节的场景表); 已执行的判据里任一 `FAIL` 即对话链路不可用, 退出码 1。未点名的场景不执行也不报绿。
+
+每个请求轮次都会先记一条健康判据 (`轮次1/2/3 流式`、`探针 首次/二次`、`低档/高档 <effort>`), 覆盖该次请求本身: 状态码、帧数、正文与推理字数; 请求失败或流式缺终止帧直接 `FAIL`。下面这组是链路级判据:
 
 | 判据 | 通过条件 |
 |---|---|
@@ -39,16 +42,19 @@
 | 思维链输出 | 上限档推演轮的增量里 `reasoning_content` 非空; 上游自述 `reasoning_tokens>0` 而流里没有思考帧即 FAIL (插件丢帧) |
 | 正文输出 | 复述轮 `content` 非空 |
 | 上下文记忆 | 第二轮复现第一轮植入的暗号 |
-| 用量上报 | 每个流式轮次 `usage` 非空, 缺失直接 FAIL (缓存判据的前置) |
+| 用量上报 | 流式轮次的 `usage` 非空; 只在缺失时记 FAIL, 有则归入该轮健康判据的明细 (缓存判据的前置), 覆盖轮次2/3 与探针二次 |
 | 多轮缓存(轮次2/轮次3) | 第二轮起缓存命中数大于 0 |
 | 重复请求缓存(二次) | 同一请求连发两次, 第二次命中数大于 0 |
-| 思考深度传递 | 高档 `reasoning_tokens` 大于低档 (档位无数值差异时 WARN) |
+| 思考深度传递 | 高档思考量大于低档 (档位无数值差异时 WARN); 上游没回报 `reasoning_tokens` 时回落到比较推理正文字数, 两者都分不出档位才 FAIL |
 | 非流式链路 | 单条完整响应, `object` 为 `chat.completion`, 带 `finish_reason`; `usage` 缺失不判 FAIL |
-| 工具调用 流式 | 带 `tools` 与 `tool_choice:auto` 的请求返回 `finish_reason:"tool_calls"`, 函数名非空, `arguments` 是合法 JSON |
+| 工具调用 流式 | 带 `tools` 与 `tool_choice:auto` 的请求返回 `finish_reason:"tool_calls"`, 每个调用带非空 `id` 与函数名, `arguments` 是合法 JSON |
 | 工具调用 非流式 | 同一请求走聚合路径后仍带 `tool_calls` 与合法 `arguments` |
 | 工具结果消费 | 把首轮 `tool_calls` 与工具结果带回下一轮, 模型正文引用了工具返回的事实 |
+| 未知模型拒绝 | 未报送的模型 id 在路由阶段被拒 (400 `model_not_found`); 同沙箱内合法模型会走到凭据阶段 (无凭据时 503 `auth_not_found`), 说明二者处理阶段不同 |
 
 缓存判据要有可命中的公共前缀才有意义, 脚本默认用重复段落撑出足够长的 system 消息, 段落数由 `-prefix` 控制
+
+参数: `-base` 目标实例、`-model <plugin>/<model>`、`-manifest` 静态清单 (默认按模型 id 的插件段推导)、`-scenarios` 场景子集、`-prefix` 前缀段落数、`-timeout` 单请求超时 (默认 180s)、`-token-file` 沙箱密钥、`-list` 打印场景清单
 
 ## How to get to it (user POV)
 

@@ -9,7 +9,7 @@
 
 ## 断言子集
 
-`dev-sandbox.go --checks quota` 只断言宿主识别到本插件的额度扩展点 (改了 QuotaProvider 注册后点名它):
+`dev-sandbox.go --checks quota` 断言「插件声明的额度能力」与「宿主注册的额度提供方」一致: 插件声明了 `QuotaProvider` 却不在提供方列表即失败, 未声明却混入也失败, 未声明的插件跳过 (改了 QuotaProvider 注册后点名它):
 
 ```bash
 go run scripts/dev-sandbox.go -plugin <id> -checks load,quota
@@ -17,7 +17,9 @@ go run scripts/dev-sandbox.go -plugin <id> -checks load,quota
 
 真实余额数值必须走下方 Driving it 的 `quota/fetch`, 沙箱离线断言不覆盖。
 
-**判据陷阱**: `quota/fetch` 返回的 `remainingFraction` 会四舍五入到整包比例 (余额 99.5675/100 读作 `1`), 判断「额度有没有被消耗」必须读上游原始数值 (`/user/wallets` 的 `balance`), 不能看管理面文案。
+**判据陷阱**: 判「额度有没有被消耗」必须读上游原始数值, 不能看管理面文案。文案是插件用取整格式拼的 (如 `余额 %.0f credits` 把 99.5675 显示成 100), 而钱包型渠道没有总量上限, `remainingFraction` 由插件写死为 `1.0`, 根本不反映消耗; 有总量的渠道 `remainingFraction` 才是 `(limit-used)/limit` 的四舍五入结果。判断消耗一律回到 `/user/wallets` 的 `balance` 等上游原始字段。
+
+**接口契约**: `quota/fetch` 的 `auth_index` 必填 (缺了返回 `400 auth_index is required`); 凭据不存在返回 `404 auth not found`; 渠道未实现额度返回 `501`; 插件执行失败返回 `502`。插件自带额度页走的是插件私有端点 `POST /v0/management/plugins/<id>/quota` (同一套 `auth_index` 语义), 面板额度页数据源即此。
 
 ## How to get to it (user POV)
 

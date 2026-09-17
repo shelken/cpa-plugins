@@ -14,14 +14,18 @@
 
 | 断言 id | 对应判据 | 何时该跑 |
 |---|---|---|
-| `load` | 宿主日志出现该插件 id 的 `plugin loaded` 与 `plugin registered` | 改了 `plugin.json`、`main.go` 注册路径、SDK 版本 |
-| `config` | 管理面 `config_fields` 非空且与声明一致 | 改了 `ConfigFields` 声明 |
-| `menus` | 管理面 `plugins` 列表暴露菜单 | 改了菜单/入口声明 |
-| `resource` | `/v0/resource/plugins/<id>/quota` 可服务 | 改了 resource 页面 |
+| `load` | 宿主日志出现该插件 id 的 `plugin loaded plugin_id=<id>` 与 `plugin registered plugin_id=<id>`; 日志另有 `model registrar` + `context deadline exceeded` 时告警 | 改了 `plugin.json`、`main.go` 注册路径、SDK 版本 |
+| `config` | 插件源码声明的配置字段 (注册元数据的 `ConfigFields`) 管理面全部回报; 未声明的插件跳过 | 改了 `ConfigFields` 声明 |
+| `menus` | 管理面 `plugins` 列表暴露菜单 (面板侧边栏入口) | 改了菜单/入口声明 |
+| `resource` | 管理面回报的每个菜单路径 (即插件声明的 `ResourceRoute.Path`) 都能返回 `200` 且内容含插件 id | 改了 resource 页面 |
 | `models` | `/v1/models` 覆盖静态清单声明的全部模型 | 改了静态清单或模型注册 |
-| `quota` | 额度提供方列表含插件 | 改了 QuotaProvider |
+| `quota` | 插件声明的额度能力与宿主注册的额度提供方一致 (声明了必须在列, 没声明不得混入) | 改了 QuotaProvider |
+
+`config` 与 `quota` 的判据都要两边对齐才成立: 插件没声明就跳过 (不算失败), 声明了却对不上才算失败。它们先读插件源码/宿主回报的声明, 再比对管理面结果, 因此不会因为响应为空而静默通过。
 
 装载类改动至少点名 `load,models`; 只改配置字段声明时 `-checks load,config` 足够。
+
+沙箱的 `-profile <值>` 会把该值写进插件的 `identity-profile` 与 `login-profile` 配置项, 用于验证「档位改变后上行请求随之改变」, 默认不写。
 
 **加断言**: 写一个 `func(*sandbox, string) error`, 在 `checkRegistry` 注册一行; 每个断言对每个插件各跑一次, `--checks list`、解析与调度自动跟随。
 

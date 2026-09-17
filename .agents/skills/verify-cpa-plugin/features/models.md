@@ -5,16 +5,18 @@
 ## Sub-features
 
 - `models-serve` 宿主对外接口包含插件静态声明的模型
-- `models-blacklist` 带动态清单过滤的插件 (如 workbuddy) 按自身规则剔除官方隐藏模型后再上报; 纯静态插件 (如 qwenworkcn) 全量直报, 无此项
+- `models-blacklist` 带名单过滤的插件 (如 workbuddy) 按自身规则剔除官方隐藏模型后再上报; 纯静态插件 (如 qwenworkcn) 全量直报, 无此项
 - `models-metadata` 上下文长度与输出上限与静态清单一致
 
 ## 断言子集
 
-`dev-sandbox.go --checks models` 覆盖 `models-serve` 与 `models-blacklist` 的「声明的必须都在」方向 (改了静态清单或注册过滤后点名它, 常与 `load` 同跑):
+`dev-sandbox.go --checks models` 覆盖 `models-serve` 的「声明的必须都在」方向 (改了静态清单或注册过滤后点名它, 常与 `load` 同跑):
 
 ```bash
 go run scripts/dev-sandbox.go -plugin <id> -checks load,models
 ```
+
+比对规则是「裸 id 或带插件前缀 id 命中其一即算在列」; 插件无静态清单时跳过比对 (不算失败)。反向方向不覆盖: 断言只判「声明的没少」, 不判「该剔除的没多」, 黑名单的负面判据见下方 Driving it 与插件单测。多处不一致时报错文案为 `静态清单声明了 N 个模型, 但 /v1/models 少了 M 个: <名单>`。断言按注册顺序在各插件间 fail-fast: 前一个插件报错即终止后续插件比对。
 
 多插件共生时一个宿主只拉一次 `/v1/models`, 各插件分别比对; 断言名与描述以 `--checks list` 为准。
 
@@ -42,8 +44,8 @@ Preconditions:
   go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models \
     | jq -r '.data[].id' | grep -E '(^|/)(auto|default|hunyuan-3b)$'
   ```
-  剔除名单与前缀规则见 `plugins/<id>/models.go` 的 `isModelAllowed`, 名单随官方客户端版本变化, 以代码为准
-- **核对元数据。** `/v1/models` 只返回 id 与归属, 上下文长度等元数据以静态清单与单测为准: 对比 `data/static-config.json` 中该模型的声明, 并跑 `cd plugins/<id> && go test ./...` 中钉住元数据映射的用例
+  workbuddy 的名单与前缀规则见 `plugins/workbuddy/models.go` 的 `isModelAllowed` (其余插件无此函数, 直报全量); 名单随官方客户端版本变化, 以代码为准
+- **核对元数据。** `/v1/models` 只返回 id 与归属, 上下文长度等元数据以静态清单与单测为准: 对比 `data/static-config.json` 中该模型的声明, 并跑 `cd plugins/<id> && go test ./...` 中钉住元数据映射的用例 (qwenworkcn 的 `TestFilterAndMapModels` 直接断清单里的 `contextLength`/`maxCompletionTokens`; workbuddy 的 `TestFilterAndMapModels` 用自建样例, 真实清单值不在此用例内)
 
 ## Gotchas
 

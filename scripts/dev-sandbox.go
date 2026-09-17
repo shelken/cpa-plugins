@@ -28,6 +28,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -52,10 +53,10 @@ type check struct {
 var checkRegistry = []check{
 	{"load", "插件已装载并注册 (宿主日志 plugin loaded / plugin registered)", checkLoad},
 	{"models", "/v1/models 覆盖静态清单声明的全部模型", checkModels},
-	{"resource", "插件 resource 页面可被宿主服务", checkResource},
+	{"resource", "插件声明的 resource 页面可被宿主服务", checkResource},
 	{"menus", "管理面 plugins 列表暴露插件菜单", checkMenus},
-	{"config", "管理面返回可视化配置字段", checkConfig},
-	{"quota", "额度提供方列表包含插件", checkQuota},
+	{"config", "插件声明了 ConfigFields 时管理面必须返回", checkConfig},
+	{"quota", "插件声明了 QuotaProvider 时额度列表必须含它", checkQuota},
 }
 
 var defaultChecks = []string{"load", "models", "resource", "menus", "config", "quota"}
@@ -142,6 +143,9 @@ type sandbox struct {
 	// modelIDs 是本次运行 /v1/models 的快照, 供各插件的模型断言复用
 	modelIDs map[string]bool
 
+	// pluginEntries 是本次运行 /v0/management/plugins 的快照, 供能力与菜单断言复用
+	pluginEntries map[string]pluginEntry
+
 	secret     string
 	configPath string
 	logPath    string
@@ -149,6 +153,11 @@ type sandbox struct {
 
 	process *exec.Cmd
 	logFile *os.File
+
+	// exited 在宿主进程退出后关闭, exitErr 保存 Wait 的结果。
+	// 只 Wait 一次: 退出检测与 stop 共用这个通道, 重复 Wait 会误判。
+	exited  chan struct{}
+	exitErr error
 }
 
 func main() {
@@ -414,6 +423,13 @@ func (s *sandbox) writeConfig() error {
 }
 
 func (s *sandbox) startHost() error {
+	// 端口被占时先停下: 宿主会先打印 "API server started successfully" 再去 bind,
+	// 若此处不拦, 就绪判据会通过, 断言则全部打到那个陌生实例上, 得出与本次插件无关的结论。
+	if inUse, holder := portHolder(s.port); inUse {
+		return fmt.Errorf("端口 %d 已被占用%s, 无法确认断言对象是本次启动的宿主; 先停掉占用方再跑",
+			s.port, holder)
+	}
+
 	logFile, err := os.Create(s.logPath)
 	if err != nil {
 		return err
@@ -427,20 +443,54 @@ func (s *sandbox) startHost() error {
 		return fmt.Errorf("启动宿主失败: %w", err)
 	}
 	s.process = command
+	s.exited = make(chan struct{})
+	go func() {
+		s.exitErr = command.Wait()
+		close(s.exited)
+	}()
 	fmt.Printf("[*] 启动宿主 pid=%d, 等待就绪...\n", command.Process.Pid)
 
 	deadline := time.Now().Add(s.timeout)
 	for time.Now().Before(deadline) {
-		log := s.readLog()
-		if strings.Contains(log, "API server started successfully") {
-			return nil
+		select {
+		case <-s.exited:
+			return fmt.Errorf("宿主在就绪前退出: %v", s.exitErr)
+		default:
 		}
-		if command.ProcessState != nil && command.ProcessState.Exited() {
-			return fmt.Errorf("宿主在就绪前退出, 退出码 %d", command.ProcessState.ExitCode())
+		if strings.Contains(s.readLog(), "API server started successfully") {
+			// 日志行在 bind 之前就打印, 因此还要实证管理面认本次沙箱的密钥:
+			// 认不了说明应答的不是我们启动的宿主。
+			if err := s.verifyOwnership(); err != nil {
+				return err
+			}
+			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("等待宿主就绪超时 (%s)", s.timeout)
+}
+
+// verifyOwnership 用本次沙箱的密钥访问管理面, 确认应答者就是刚启动的宿主。
+func (s *sandbox) verifyOwnership() error {
+	body, status, err := s.httpGet("/v0/management/plugins", true)
+	if err != nil {
+		return fmt.Errorf("就绪后无法访问管理面, 无法确认宿主归属: %w", err)
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("就绪后管理面返回 HTTP %d (本沙箱密钥未被接受), 占用端口 %d 的不是本次启动的宿主: %s",
+			status, s.port, truncate(body, 120))
+	}
+	return nil
+}
+
+// portHolder 探测端口是否已被监听, 并尽量给出占用者, 便于用户直接定位残留宿主。
+func portHolder(port int) (bool, string) {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+	if err != nil {
+		return false, ""
+	}
+	_ = conn.Close()
+	return true, ""
 }
 
 // assert 按注册顺序调度断言, 每个断言对每个插件各跑一次。
@@ -515,6 +565,58 @@ func (s *sandbox) servedModelIDs() (map[string]bool, error) {
 	return served, nil
 }
 
+// pluginEntry 是管理面 /v0/management/plugins 里单个插件的注册结果。
+// 插件声明了什么能力, 以宿主注册后回报的字段为准, 不靠沙箱猜。
+type pluginEntry struct {
+	ID            string `json:"id"`
+	SupportsQuota bool   `json:"supports_quota"`
+	ConfigFields  []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	} `json:"config_fields"`
+	Menus []struct {
+		Path string `json:"path"`
+		Menu string `json:"menu"`
+	} `json:"menus"`
+}
+
+// loadPluginEntries 拉一次 /v0/management/plugins 建立 id -> 条目快照。
+// 管理面不可达时直接报错: 拿到空快照会让能力断言得出假绿结论。
+func (s *sandbox) loadPluginEntries() error {
+	if s.pluginEntries != nil {
+		return nil
+	}
+	body, status, err := s.httpGet("/v0/management/plugins", true)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("GET /v0/management/plugins 返回 %d: %s", status, truncate(body, 200))
+	}
+	var payload struct {
+		Plugins []pluginEntry `json:"plugins"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return fmt.Errorf("解析 /v0/management/plugins 响应失败: %w", err)
+	}
+	s.pluginEntries = make(map[string]pluginEntry, len(payload.Plugins))
+	for _, entry := range payload.Plugins {
+		s.pluginEntries[entry.ID] = entry
+	}
+	return nil
+}
+
+func (s *sandbox) pluginEntryFor(pluginID string) (pluginEntry, error) {
+	if err := s.loadPluginEntries(); err != nil {
+		return pluginEntry{}, err
+	}
+	entry, ok := s.pluginEntries[pluginID]
+	if !ok {
+		return pluginEntry{}, fmt.Errorf("/v0/management/plugins 列表中没有找到插件 %s", pluginID)
+	}
+	return entry, nil
+}
+
 func (s *sandbox) wantsCheck(id string) bool {
 	for _, c := range s.chosen {
 		if c.id == id {
@@ -556,60 +658,50 @@ func checkModels(s *sandbox, pluginID string) error {
 	return nil
 }
 
-// assertResourcePage 验证插件 resource 页面可被宿主服务 (面板 iframe 数据源)。
+// checkResource 验证插件声明的每个 resource 页面都能被宿主服务。
+// 路径来自管理面回报的菜单 (插件自己声明的 ResourceRoute), 不硬编码: 各插件的
+// resource 路径不同 (qwenworkcn/workbuddy 是 /quota, echo-probe 是 /status),
+// 硬编码只会把「断言跑错页面」当成功能问题。
 func checkResource(s *sandbox, pluginID string) error {
-	body, status, err := s.httpGet("/v0/resource/plugins/"+pluginID+"/quota", false)
+	entry, err := s.pluginEntryFor(pluginID)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("GET /v0/resource/plugins/%s/quota 返回 %d: %s", pluginID, status, truncate(body, 200))
+	if len(entry.Menus) == 0 {
+		return fmt.Errorf("插件 %s 未声明任何 resource 页面, 面板侧边栏不会有入口", pluginID)
 	}
-	if !strings.Contains(body, pluginID) {
-		return fmt.Errorf("resource 页面内容不含 %q, 疑似服务了错误内容: %s", pluginID, truncate(body, 200))
+	for _, menu := range entry.Menus {
+		body, status, err := s.httpGet(menu.Path, false)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("GET %s 返回 %d: %s", menu.Path, status, truncate(body, 200))
+		}
+		if !strings.Contains(body, pluginID) {
+			return fmt.Errorf("%s 的内容不含 %q, 疑似服务了错误页面: %s",
+				menu.Path, pluginID, truncate(body, 200))
+		}
 	}
-	fmt.Printf("[+] 断言通过: 插件 %s 的 resource 页面已注册且可访问\n", pluginID)
+	fmt.Printf("[+] 断言通过: 插件 %s 的 %d 个 resource 页面已注册且可访问\n", pluginID, len(entry.Menus))
 	return nil
 }
 
-// assertPluginMenus 验证管理面 plugins 列表暴露了插件菜单 (面板侧边栏入口)。
+// checkMenus 验证管理面 plugins 列表暴露了插件菜单 (面板侧边栏入口)。
 func checkMenus(s *sandbox, pluginID string) error {
-	body, status, err := s.httpGet("/v0/management/plugins", true)
+	entry, err := s.pluginEntryFor(pluginID)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("GET /v0/management/plugins 返回 %d: %s", status, truncate(body, 200))
+	if len(entry.Menus) == 0 {
+		return fmt.Errorf("插件 %s 未注册任何菜单, 面板侧边栏不会显示", pluginID)
 	}
-
-	var payload struct {
-		Plugins []struct {
-			ID    string `json:"id"`
-			Menus []struct {
-				Path string `json:"path"`
-				Menu string `json:"menu"`
-			} `json:"menus"`
-		} `json:"plugins"`
+	menus := make([]string, 0, len(entry.Menus))
+	for _, menu := range entry.Menus {
+		menus = append(menus, menu.Menu+" ("+menu.Path+")")
 	}
-	if err := json.Unmarshal([]byte(body), &payload); err != nil {
-		return fmt.Errorf("解析 /v0/management/plugins 响应失败: %w", err)
-	}
-
-	for _, plugin := range payload.Plugins {
-		if plugin.ID != pluginID {
-			continue
-		}
-		if len(plugin.Menus) == 0 {
-			return fmt.Errorf("插件 %s 未注册任何菜单, 面板侧边栏不会显示", pluginID)
-		}
-		menus := make([]string, 0, len(plugin.Menus))
-		for _, menu := range plugin.Menus {
-			menus = append(menus, menu.Menu+" ("+menu.Path+")")
-		}
-		fmt.Printf("[+] 断言通过: %s 插件菜单已注册: %s\n", pluginID, strings.Join(menus, ", "))
-		return nil
-	}
-	return fmt.Errorf("/v0/management/plugins 列表中没有找到插件 %s", pluginID)
+	fmt.Printf("[+] 断言通过: %s 插件菜单已注册: %s\n", pluginID, strings.Join(menus, ", "))
+	return nil
 }
 
 // declaredModels 读取插件内嵌静态清单里声明的模型 id。
@@ -643,51 +735,177 @@ func (s *sandbox) declaredModels(pluginID string) ([]string, error) {
 	return ids, nil
 }
 
+// checkQuota 断言「插件声明的额度能力」与「宿主实际注册的额度提供方」一致。
+// 判据取自宿主回报的 supports_quota (插件注册时自己声明的), 因此两个方向都可证伪:
+// 声明了却不在提供方列表, 或没声明却混进列表, 都是注册层漂移。管理面不可达直接失败,
+// 否则空结果会被当成「插件没实现额度」而静默放行。
 func checkQuota(s *sandbox, pluginID string) error {
+	entry, err := s.pluginEntryFor(pluginID)
+	if err != nil {
+		return err
+	}
 	body, status, err := s.httpGet("/v0/management/quota/providers", true)
-	if err != nil || status != http.StatusOK {
-		return nil
+	if err != nil {
+		return err
 	}
-	if strings.Contains(body, `"`+pluginID+`"`) {
-		fmt.Printf("[+] 断言通过: %s 在额度提供方列表中\n", pluginID)
-		return nil
+	if status != http.StatusOK {
+		return fmt.Errorf("GET /v0/management/quota/providers 返回 %d: %s", status, truncate(body, 200))
 	}
-	fmt.Printf("[i] 额度提供方列表不含 %s (未实现 QuotaProvider 时属正常)\n", pluginID)
-	return nil
-}
-func checkConfig(s *sandbox, pluginID string) error {
-	body, status, err := s.httpGet("/v0/management/plugins", true)
-	if err != nil || status != http.StatusOK {
-		return nil
+	var payload struct {
+		Providers []struct {
+			PluginID string `json:"plugin_id"`
+			Provider string `json:"provider"`
+		} `json:"providers"`
 	}
-	var resp struct {
-		Plugins []struct {
-			ID           string `json:"id"`
-			ConfigFields []struct {
-				Name string `json:"name"`
-				Type string `json:"type"`
-			} `json:"config_fields"`
-		} `json:"plugins"`
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return fmt.Errorf("解析额度提供方列表失败: %w", err)
 	}
-	if err := json.Unmarshal([]byte(body), &resp); err != nil {
-		return nil
-	}
-	for _, p := range resp.Plugins {
-		if p.ID == pluginID {
-			if len(p.ConfigFields) > 0 {
-				names := make([]string, 0, len(p.ConfigFields))
-				for _, f := range p.ConfigFields {
-					names = append(names, f.Name)
-				}
-				fmt.Printf("[+] 断言通过: %s 管理面返回 %d 个配置字段: %s\n",
-					pluginID, len(p.ConfigFields), strings.Join(names, ", "))
-			} else {
-				fmt.Printf("[i] %s 管理面未返回可视化配置字段 (config_fields 为空)\n", pluginID)
-			}
-			return nil
+	found := false
+	for _, p := range payload.Providers {
+		if p.PluginID == pluginID || p.Provider == pluginID {
+			found = true
+			break
 		}
 	}
+	switch {
+	case entry.SupportsQuota && !found:
+		return fmt.Errorf("插件 %s 声明了 supports_quota 但不在额度提供方列表中, 额度页不会有该渠道", pluginID)
+	case !entry.SupportsQuota && found:
+		return fmt.Errorf("插件 %s 未声明 supports_quota 却出现在额度提供方列表中, 注册层与声明不一致", pluginID)
+	case !entry.SupportsQuota:
+		fmt.Printf("[i] 插件 %s 未声明额度能力, 跳过 (不判失败)\n", pluginID)
+		return nil
+	}
+	fmt.Printf("[+] 断言通过: %s 声明了额度能力且在提供方列表中\n", pluginID)
 	return nil
+}
+
+// checkConfig 断言「插件在源码里声明的可视化配置字段」都被宿主回报出来。
+// 声明从插件源码读 (注册元数据里唯一的前置事实), 回报从管理面读; 两者不一致即失败,
+// 不会因为 config_fields 为空就默认通过 —— 没声明配置字段的插件本来就不该报字段。
+func checkConfig(s *sandbox, pluginID string) error {
+	declared, err := declaredConfigFields(s.pluginDirs[pluginID])
+	if err != nil {
+		return err
+	}
+	entry, err := s.pluginEntryFor(pluginID)
+	if err != nil {
+		return err
+	}
+	if len(declared) == 0 {
+		if len(entry.ConfigFields) > 0 {
+			return fmt.Errorf("插件 %s 源码未声明配置字段, 管理面却回报了 %d 个, 注册层与声明不一致",
+				pluginID, len(entry.ConfigFields))
+		}
+		fmt.Printf("[i] 插件 %s 未声明可视化配置字段, 跳过 (不判失败)\n", pluginID)
+		return nil
+	}
+	reported := make(map[string]bool, len(entry.ConfigFields))
+	names := make([]string, 0, len(entry.ConfigFields))
+	for _, field := range entry.ConfigFields {
+		reported[field.Name] = true
+		names = append(names, field.Name)
+	}
+	var missing []string
+	for _, name := range declared {
+		if !reported[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("插件 %s 源码声明了 %d 个配置字段, 管理面少了 %d 个: %s (实际回报: %s)",
+			pluginID, len(declared), len(missing), strings.Join(missing, ", "), strings.Join(names, ", "))
+	}
+	fmt.Printf("[+] 断言通过: %s 声明的 %d 个配置字段管理面全部返回: %s\n",
+		pluginID, len(declared), strings.Join(names, ", "))
+	return nil
+}
+
+// declaredConfigFields 从插件源码里读出注册元数据声明的配置字段名。
+// 配置字段只在注册元数据里声明一次 (main.go 的 metadata.ConfigFields), 宿主回报的
+// config_fields 由它派生, 因此源码是这里的独立前置事实。
+func declaredConfigFields(pluginDir string) ([]string, error) {
+	files, err := filepath.Glob(filepath.Join(pluginDir, "*.go"))
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, configFieldNames(string(data))...)
+	}
+	return names, nil
+}
+
+// configFieldNames 取 ConfigFields 字面量块内的 Name 取值。
+// 从 marker 后第一个 '{' 起算花括号深度, 归零即块结束, 不会把后续字面量里的 Name 算进来。
+func configFieldNames(source string) []string {
+	const marker = "ConfigFields:"
+	var names []string
+	for offset := 0; ; {
+		idx := strings.Index(source[offset:], marker)
+		if idx < 0 {
+			return names
+		}
+		start := strings.Index(source[offset+idx+len(marker):], "{")
+		if start < 0 {
+			return names
+		}
+		start += offset + idx + len(marker)
+		depth, end := 0, -1
+		for i := start; i < len(source); i++ {
+			switch source[i] {
+			case '{':
+				depth++
+			case '}':
+				if depth--; depth == 0 {
+					end = i
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			end = len(source)
+		}
+		names = append(names, fieldNamesIn(source[start:end])...)
+		offset = end + 1
+		if offset >= len(source) {
+			return names
+		}
+	}
+}
+
+// fieldNamesIn 取代码片段里 `Name: "..."` 的取值, 空串不算声明。
+func fieldNamesIn(fragment string) []string {
+	var names []string
+	for offset := 0; ; {
+		idx := strings.Index(fragment[offset:], "Name:")
+		if idx < 0 {
+			return names
+		}
+		rest := fragment[offset+idx+len("Name:"):]
+		quote := strings.Index(rest, `"`)
+		if quote < 0 {
+			return names
+		}
+		closing := strings.Index(rest[quote+1:], `"`)
+		if closing < 0 {
+			return names
+		}
+		value := rest[quote+1 : quote+1+closing]
+		if strings.TrimSpace(value) != "" {
+			names = append(names, value)
+		}
+		offset = offset + idx + len("Name:") + quote + 1 + closing + 1
+	}
 }
 
 func (s *sandbox) httpGet(path string, management bool) (string, int, error) {
@@ -742,15 +960,14 @@ func (s *sandbox) stop() {
 		return
 	}
 	_ = s.process.Process.Signal(os.Interrupt)
-	done := make(chan struct{})
-	go func() {
-		_, _ = s.process.Process.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = s.process.Process.Kill()
+	// 退出检测与 stop 共用 startHost 里那一个 Wait, 重复 Wait 拿不到真实退出状态。
+	if s.exited != nil {
+		select {
+		case <-s.exited:
+		case <-time.After(5 * time.Second):
+			_ = s.process.Process.Kill()
+			<-s.exited
+		}
 	}
 	if s.logFile != nil {
 		_ = s.logFile.Close()
