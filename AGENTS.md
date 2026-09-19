@@ -28,6 +28,7 @@
 
 ## 快速指路
 
+- 插件发版/发布: 阅读 `docs/how-to/plugin-release.md`（变更集升版本、本地打包预检、推标签触发 CI 回填哈希的完整流程）
 - 如何连接生产cpa: 阅读~/.omp/agent/models.yml中的cpa找到baseurl, 然后通过 scripts/management-api.go 控制和查询
 - home-ops: 通常在我的active目录下, cpa生产通过gitops部署在那里, 配置也在里面; 当需要修改配置生效时去找`cli-proxy-api`目录, 推送前告知用户
 

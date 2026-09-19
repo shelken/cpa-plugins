@@ -56,11 +56,24 @@
   .fill.low { background: var(--low); }
   .muted { color: var(--muted); }
   .empty { color: var(--muted); text-align: center; padding: 32px 0; }
+  .card .checkin-row { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+  .card .checkin-row button { padding: 3px 10px; font-size: 12px; }
+  .card .checkin-row button:disabled { opacity: .5; cursor: default; }
+  .card .checkin-state.ok { color: var(--high); font-size: 12px; }
+  .card .checkin-state.warn { color: var(--muted); font-size: 12px; }
+  .card .checkin-state.fail { color: var(--low); font-size: 12px; }
+  button.secondary {
+    background: transparent; color: var(--text);
+    border: 1px solid var(--border); padding: 4px 10px;
+  }
+  button.secondary:disabled { opacity: .5; cursor: default; }
 </style>
 </head>
 <body>
 <header>
   <h1>WorkBuddy Quota</h1>
+  <span id="checkin-summary" class="muted" hidden></span>
+  <button id="checkin-all" hidden>全部签到</button>
   <button id="refresh">刷新</button>
 </header>
 <div id="keybox" class="hidden">
@@ -158,24 +171,123 @@
     }).join('');
   }
 
+  function checkinStateHTML(entry) {
+    const state = entry.checkinState;
+    if (!state) return '';
+    const cls = state.kind === 'claimed' ? 'ok' : state.kind === 'already_claimed' ? 'warn' : 'fail';
+    return '<span class="checkin-state ' + cls + '">' + esc(state.text) + '</span>';
+  }
+
   function renderCard(entry) {
-    if (entry.error) {
-      return '<div class="card"><div class="name">' + esc(entry.name) + '</div>'
-        + '<div class="error">' + esc(entry.error) + '</div></div>';
+    const tier = entry.quota && entry.quota.subscription
+      ? (entry.quota.subscription.tierName || entry.quota.subscription.plan || '') : '';
+    const groups = (entry.quota && entry.quota.groups) || [];
+    let body;
+    if (entry.quotaError) {
+      body = '<div class="error">' + esc(entry.quotaError) + '</div>';
+    } else if (entry.quota) {
+      body = groups.length ? groups.map((group) => renderBuckets(group.buckets)).join('')
+        : '<div class="muted">暂无窗口数据</div>';
+    } else {
+      body = '<div class="muted">加载中…</div>';
     }
-    const quota = entry.quota || {};
-    const tier = quota.subscription ? (quota.subscription.tierName || quota.subscription.plan || '') : '';
-    const groups = quota.groups || [];
-    const body = groups.length
-      ? groups.map((group) => renderBuckets(group.buckets)).join('')
-      : '<div class="muted">暂无窗口数据</div>';
+    const checkinRow = checkinEnabled && entry.authIndex
+      ? '<div class="checkin-row"><button class="secondary" data-checkin="' + entry.index + '">签到</button>'
+        + '<span class="checkin-state-slot">' + checkinStateHTML(entry) + '</span></div>'
+      : (checkinStateHTML(entry)
+        ? '<div class="checkin-row"><span class="checkin-state-slot">' + checkinStateHTML(entry) + '</span></div>'
+        : '');
     return '<div class="card">'
       + '<div><span class="name">' + esc(entry.name) + '</span>'
       + (tier ? '<span class="tier">' + esc(tier) + '</span>' : '')
-      + '</div>' + body + '</div>';
+      + '</div>' + body + checkinRow + '</div>';
   }
 
+  // entries 是页面唯一状态源; 重渲染整页, 卡片顺序即凭据顺序。
+  let entries = [];
+
+  function renderAll() {
+    if (!entries.length) {
+      content.className = 'empty';
+      content.textContent = '没有 WorkBuddy 凭据';
+    } else {
+      content.className = '';
+      content.innerHTML = entries.map(renderCard).join('');
+    }
+    checkinAllButton.hidden = !checkinEnabled || !entries.length;
+    checkinAllButton.disabled = batchRunning;
+    refreshButton.disabled = batchRunning;
+  }
+
+  function setEntryState(index, patch) {
+    entries[index] = Object.assign({}, entries[index], patch);
+    renderAll();
+  }
+
+  // ---- 签到 ----
+  const checkinEnabled = document.body.dataset.checkinEnabled === 'true';
+  const checkinAllButton = document.getElementById('checkin-all');
+  const checkinSummary = document.getElementById('checkin-summary');
+  const refreshButton = document.getElementById('refresh');
+  let batchRunning = false;
+
+  // 服务端语义透传: claimed / already_claimed / 失败文本。
+  function checkinStateFromResult(result) {
+    if (result.status === 'claimed') {
+      const extra = [];
+      if (typeof result.credit === 'number') extra.push('+' + result.credit + ' 积分');
+      if (typeof result.streak_days === 'number') extra.push('连续 ' + result.streak_days + ' 天');
+      return { kind: 'claimed', text: '签到成功' + (extra.length ? ' (' + extra.join(', ') + ')' : '') };
+    }
+    if (result.status === 'already_claimed') return { kind: 'already_claimed', text: '今日已签到' };
+    return { kind: 'failed', text: '未知响应' };
+  }
+
+  async function claimCheckin(index) {
+    const entry = entries[index];
+    if (!entry || !entry.authIndex) return;
+    setEntryState(index, { checkinState: { kind: 'pending', text: '签到中…' } });
+    try {
+      const result = await api('/v0/management/plugins/workbuddy/checkin', {
+        method: 'POST',
+        body: JSON.stringify({ auth_index: entry.authIndex }),
+      });
+      setEntryState(index, { checkinState: checkinStateFromResult(result) });
+      return checkinStateFromResult(result).kind;
+    } catch (err) {
+      setEntryState(index, { checkinState: { kind: 'failed', text: err.message } });
+      return 'failed';
+    }
+  }
+
+  // 全部签到与源实现 checkinAll 一致: 顺序执行, 单卡失败不中断后续账号。
+  async function checkinAll() {
+    if (batchRunning || !checkinEnabled) return;
+    batchRunning = true;
+    checkinSummary.hidden = true;
+    renderAll();
+    let claimed = 0, already = 0, failed = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const kind = await claimCheckin(i);
+      if (kind === 'claimed') claimed++;
+      else if (kind === 'already_claimed') already++;
+      else failed++;
+    }
+    batchRunning = false;
+    checkinSummary.textContent = '成功 ' + claimed + '，今日已签 ' + already + '，失败 ' + failed;
+    checkinSummary.hidden = false;
+    renderAll();
+  }
+
+  content.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-checkin]');
+    if (!button || batchRunning) return;
+    claimCheckin(Number(button.dataset.checkin));
+  });
+  checkinAllButton.addEventListener('click', checkinAll);
+
   async function loadAll() {
+    if (batchRunning) return;
     content.className = 'empty';
     content.textContent = '加载中…';
     let files;
@@ -187,32 +299,38 @@
     }
     const credentials = (files.files || []).filter((file) =>
       file.provider === 'workbuddy' || file.type === 'workbuddy');
-    if (!credentials.length) {
-      content.textContent = '没有 WorkBuddy 凭据';
-      return;
-    }
-    content.className = '';
-    content.innerHTML = credentials.map((credential) =>
-      renderCard({ name: credential.name || credential.auth_index || credential.id }));
-    await Promise.all(credentials.map(async (credential, index) => {
+    // 保留本页会话内已有的签到结果; 刷新额度不覆盖签到状态。
+    entries = credentials.map((credential, index) => {
+      const prev = entries[index] || {};
+      return {
+        name: credential.name || credential.auth_index || credential.id,
+        authIndex: credential.auth_index || null,
+        quota: null,
+        quotaError: null,
+        checkinState: prev.authIndex === credential.auth_index ? prev.checkinState : undefined,
+        index,
+      };
+    });
+    renderAll();
+    await Promise.all(credentials.map(async (_, index) => {
       let quota = null;
       let error = null;
       try {
         quota = await api('/v0/management/plugins/workbuddy/quota', {
           method: 'POST',
-          body: JSON.stringify({ auth_index: credential.auth_index }),
+          body: JSON.stringify({ auth_index: entries[index].authIndex }),
         });
       } catch (err) {
         error = err.message;
       }
-      const card = { name: credential.name || credential.auth_index || credential.id };
-      if (error) card.error = error; else card.quota = quota;
-      // 只替换自己的卡片, 单卡失败不影响其他卡。
-      content.children[index].outerHTML = renderCard(card);
+      setEntryState(index, error ? { quotaError: error } : { quota });
     }));
   }
 
-  document.getElementById('refresh').addEventListener('click', loadAll);
+  if (!checkinEnabled) {
+    checkinSummary.textContent = '签到功能已关闭';
+    checkinSummary.hidden = false;
+  }
   keyInput.addEventListener('input', () => {
     cachedKey = keyInput.value.trim() || null;
   });

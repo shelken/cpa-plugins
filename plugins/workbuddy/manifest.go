@@ -42,6 +42,7 @@ type EndpointsConfig struct {
 	Accounts        string `json:"accounts"`
 	UserResource    string `json:"userResource"`
 	ModelsConfig    string `json:"modelsConfig"`
+	DailyCheckin    string `json:"dailyCheckin"`
 }
 
 type ProfileConfig struct {
@@ -112,12 +113,22 @@ func parseManifest(data []byte) (*ManifestV2, error) {
 	if m.Endpoints.UserResource == "" {
 		return nil, fmt.Errorf("manifest endpoints.userResource is required")
 	}
+	if m.Endpoints.DailyCheckin == "" {
+		return nil, fmt.Errorf("manifest endpoints.dailyCheckin is required")
+	}
+	if _, ok := m.RequestBodies["dailyCheckin"]; !ok {
+		return nil, fmt.Errorf("manifest requestBodies.dailyCheckin is required")
+	}
 
 	if m.Profiles == nil {
 		return nil, fmt.Errorf("manifest profiles map is required")
 	}
 	if _, ok := m.Profiles[string(ProfileDesktop)]; !ok {
 		return nil, fmt.Errorf("manifest missing profile %q", ProfileDesktop)
+	}
+	desktopProfile := m.Profiles[string(ProfileDesktop)]
+	if len(desktopProfile.Headers["checkin"]) == 0 {
+		return nil, fmt.Errorf("manifest profiles.desktop.headers.checkin is required")
 	}
 	if _, ok := m.Profiles[string(ProfileCLI)]; !ok {
 		return nil, fmt.Errorf("manifest missing profile %q", ProfileCLI)

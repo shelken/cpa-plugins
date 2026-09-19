@@ -21,6 +21,7 @@ type PluginConfig struct {
 	LoginProfile      string `yaml:"login-profile"`
 	EnableModelPrefix *bool  `yaml:"enable-model-prefix"`
 	ModelPrefix       string `yaml:"model-prefix"`
+	EnableCheckin     *bool  `yaml:"enable-checkin"`
 }
 
 const DefaultModelPrefix = "workbuddy"
@@ -55,6 +56,11 @@ func parseConfig(yamlBytes []byte) (*PluginConfig, error) {
 	cfg.ModelPrefix = strings.TrimSpace(cfg.ModelPrefix)
 
 	return cfg, nil
+}
+
+// checkinEnabled 返回管理页手动签到开关。nil 视为开启, 与文档描述的默认行为一致。
+func (c *PluginConfig) checkinEnabled() bool {
+	return c.EnableCheckin == nil || *c.EnableCheckin
 }
 
 // modelPrefix 返回带斜杠的前缀, 关闭时返回空串。nil 视为开启, 与文档描述的默认行为一致。

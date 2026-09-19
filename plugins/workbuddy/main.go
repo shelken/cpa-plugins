@@ -316,7 +316,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			SchemaVersion: pluginabi.SchemaVersion,
 			Metadata: pluginapi.Metadata{
 				Name:             "WorkBuddy",
-				Version:          "0.2.2",
+				Version:          "0.2.3",
 				Author:           "shelken",
 				GitHubRepository: "https://github.com/shelken/cpa-plugins",
 				ConfigFields: []pluginapi.ConfigField{
@@ -336,6 +336,11 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 						Name:        "enable-model-prefix",
 						Type:        pluginapi.ConfigFieldTypeBoolean,
 						Description: "注册模型 id 是否带前缀。默认 true。",
+					},
+					{
+						Name:        "enable-checkin",
+						Type:        pluginapi.ConfigFieldTypeBoolean,
+						Description: "是否允许管理页手动签到 (单账号与一键全部)。默认 true。",
 					},
 					{
 						Name:        "model-prefix",

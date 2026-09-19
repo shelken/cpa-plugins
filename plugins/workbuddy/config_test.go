@@ -13,6 +13,20 @@ func mustParseConfig(t *testing.T, yamlBytes []byte) *PluginConfig {
 	return cfg
 }
 
+// withTestConfig 临时替换插件全局配置, 测试结束恢复。config/management handler 共用同一状态。
+func withTestConfig(t *testing.T, cfg *PluginConfig) {
+	t.Helper()
+	pluginStateMu.Lock()
+	prev := currentConfig
+	currentConfig = cfg
+	pluginStateMu.Unlock()
+	t.Cleanup(func() {
+		pluginStateMu.Lock()
+		currentConfig = prev
+		pluginStateMu.Unlock()
+	})
+}
+
 func TestParseConfigDefaults(t *testing.T) {
 	cfg, err := parseConfig(nil)
 	if err != nil {
@@ -61,6 +75,24 @@ identity-profile: invalid
 	_, err := parseConfig(yamlData)
 	if err == nil {
 		t.Fatal("expected error for invalid profile, got nil")
+	}
+}
+
+// 签到开关缺省为 true, 显式 false 才关闭; 与管理字段描述一致。
+func TestParseConfigCheckinEnabled(t *testing.T) {
+	defaultCfg := mustParseConfig(t, nil)
+	if !defaultCfg.checkinEnabled() {
+		t.Error("expected checkin enabled by default")
+	}
+
+	enabledCfg := mustParseConfig(t, []byte("enable-checkin: true\n"))
+	if !enabledCfg.checkinEnabled() {
+		t.Error("expected checkin enabled when explicitly true")
+	}
+
+	disabledCfg := mustParseConfig(t, []byte("enable-checkin: false\n"))
+	if disabledCfg.checkinEnabled() {
+		t.Error("expected checkin disabled when explicitly false")
 	}
 }
 

@@ -4,7 +4,7 @@
 
 ## Status
 
-accepted
+accepted（每日签到的丢弃范围已由 [ADR-0009](./0009-manual-checkin-management-page.md) 局部取代：管理页手动签到能力已加回，其余边界不变）
 
 ## Considered Options
 

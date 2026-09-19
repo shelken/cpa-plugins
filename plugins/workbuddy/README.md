@@ -6,6 +6,7 @@ CLIProxyAPI 的腾讯 WorkBuddy 原生渠道插件。
 
 - **原生渠道**：把 WorkBuddy 注册为 CPA 的一级上游渠道，同时提供鉴权、模型清单、对话执行与额度查询四项能力
 - **扫码登录**：走官方桌面端的 OAuth 握手，凭据由宿主托管，插件本身不落盘
+- **手动签到**：在额度页对单个账号签到或一键签到全部账号，协议与桌面客户端一致，可在配置中关闭
 - **零运行时依赖**：官方模型清单与计费倍率内嵌在静态清单里，启动不请求远端配置
 - **协议保真**：请求头与请求体以真实客户端流量为准，任何字段改动都要有版本匹配的抓包会话作为证据
 - **额度可见**：把套餐余量换算成剩余比例上报宿主
@@ -36,6 +37,7 @@ plugins:
 | `identity-profile` | string | `desktop` | 请求头身份档，可选 `desktop` 或 `cli` |
 | `login-profile` | string | `desktop` | 登录流程档，可选 `desktop` 或 `cli` |
 | `enable-model-prefix` | boolean | `true` | 注册模型 id 是否带前缀 |
+| `enable-checkin` | boolean | `true` | 是否允许管理页手动签到（单账号与一键全部） |
 | `model-prefix` | string | `workbuddy` | 模型 id 前缀，仅 `enable-model-prefix` 为 `true` 时生效 |
 
 两个档位互相独立。身份档决定请求头怎么写，登录档决定凭据怎么拿，允许混搭。改动后需重启宿主生效。
@@ -51,6 +53,16 @@ plugins:
 - 数据来源是宿主管理 API：`/v0/management/auth-files` 列凭据，`/v0/management/plugins/workbuddy/quota` 查单个凭据额度，凭据密钥全程留在宿主进程
 - 页面与面板同源，自动读取面板记住的管理密钥；读取失败（如面板改了本地存储格式）时页面会给出手贴密钥的输入框兜底
 - 手动「刷新」按钮更新数据，无自动轮询
+
+### 手动签到
+
+额度页默认开启签到能力（`enable-checkin` 可关闭）：
+
+- 每张账号卡片有「签到」按钮，头部有「全部签到」按钮
+- 签到请求走 `POST /v0/management/plugins/workbuddy/checkin`，浏览器只提交 `auth_index`，access token 始终留在宿主与插件进程内
+- 「全部签到」按账号顺序逐个请求（与官方客户端行为一致），单卡失败不影响后续账号，结束后显示成功/已签/失败汇总
+- 签到协议固定使用桌面主进程档（端点 `/v2/billing/meter/daily-checkin`），与 `identity-profile` 配置无关；上游返回「今日已领」时页面显示今日已签到，不重复计奖
+- 插件不保存签到记录：是否已签到由上游判定，重复点击安全；关闭 `enable-checkin` 后页面隐藏签到按钮，后端端点也返回 403
 
 另外，v0.2.0 修复了额度查询请求体与桌面客户端抓包不一致的问题（字段误发成字符串导致上游 400），修复后额度接口才能返回真实数据。
 

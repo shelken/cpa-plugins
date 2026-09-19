@@ -17,7 +17,8 @@
     "tokenRefresh": "/v2/plugin/auth/token/refresh",
     "accounts": "/v2/plugin/accounts",
     "userResource": "/v2/billing/meter/get-user-resource",
-    "modelsConfig": "/v3/config"
+    "modelsConfig": "/v3/config",
+    "dailyCheckin": "/v2/billing/meter/daily-checkin"
   },
   "profiles": {
     "desktop": {
@@ -49,6 +50,12 @@
           "Accept": "application/json",
           "User-Agent": "WorkBuddy/{{appVersion}} WorkBuddy/{{appVersion}} CLI/{{cliVersion}}",
           "X-Product": "SaaS",
+          "X-Domain": "www.workbuddy.cn"
+        },
+        "checkin": {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+          "User-Agent": "axios/1.13.6",
           "X-Domain": "www.workbuddy.cn"
         }
       },
@@ -148,6 +155,10 @@
       "Authorization",
       "X-Request-ID",
       "X-User-Id"
+    ],
+    "dailyCheckin": [
+      "Authorization",
+      "X-User-Id"
     ]
   },
   "requestBodies": {
@@ -159,7 +170,8 @@
         0,
         3
       ]
-    }
+    },
+    "dailyCheckin": {}
   },
   "sanitizations": [
     {
