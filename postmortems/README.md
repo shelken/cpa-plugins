@@ -11,3 +11,4 @@
 - [009 · 拿复述型提示词判思考输出](./009-cot-judgement-wrong-anchor.md)
 - [010 · 并发发版 record 回填竞态与哈希丢失](./010-release-record-race-and-backfill-loss.md)
 - [011 · 沙箱断言恒真且就绪判定打到陌生实例](./011-silent-pass-assertions-and-foreign-instance.md)
+- [012 · 交接清单覆盖了待办排序与进度可见性](./012-handoff-todos-vs-self-inserted-work.md)
