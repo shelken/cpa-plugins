@@ -191,8 +191,10 @@
     } else {
       body = '<div class="muted">加载中…</div>';
     }
+    const checkinPending = entry.checkinState && entry.checkinState.kind === 'pending';
     const checkinRow = checkinEnabled && entry.authIndex
-      ? '<div class="checkin-row"><button class="secondary" data-checkin="' + entry.index + '">签到</button>'
+      ? '<div class="checkin-row"><button class="secondary" data-checkin="' + entry.index + '"'
+        + (checkinPending || batchRunning ? ' disabled' : '') + '>签到</button>'
         + '<span class="checkin-state-slot">' + checkinStateHTML(entry) + '</span></div>'
       : (checkinStateHTML(entry)
         ? '<div class="checkin-row"><span class="checkin-state-slot">' + checkinStateHTML(entry) + '</span></div>'
@@ -215,8 +217,10 @@
       content.innerHTML = entries.map(renderCard).join('');
     }
     checkinAllButton.hidden = !checkinEnabled || !entries.length;
-    checkinAllButton.disabled = batchRunning;
-    refreshButton.disabled = batchRunning;
+    const anyPending = entries.some((entry) =>
+      entry.checkinState && entry.checkinState.kind === 'pending');
+    checkinAllButton.disabled = batchRunning || anyPending;
+    refreshButton.disabled = batchRunning || anyPending;
   }
 
   function setEntryState(index, patch) {
@@ -243,9 +247,11 @@
     return { kind: 'failed', text: '未知响应' };
   }
 
+  // 返回 claimed / already_claimed / failed / skipped; skipped 不计入失败。
   async function claimCheckin(index) {
     const entry = entries[index];
-    if (!entry || !entry.authIndex) return;
+    const busy = entry && entry.checkinState && entry.checkinState.kind === 'pending';
+    if (!entry || !entry.authIndex || busy) return 'skipped';
     setEntryState(index, { checkinState: { kind: 'pending', text: '签到中…' } });
     try {
       const result = await api('/v0/management/plugins/workbuddy/checkin', {
@@ -271,7 +277,7 @@
       const kind = await claimCheckin(i);
       if (kind === 'claimed') claimed++;
       else if (kind === 'already_claimed') already++;
-      else failed++;
+      else if (kind !== 'skipped') failed++;
     }
     batchRunning = false;
     checkinSummary.textContent = '成功 ' + claimed + '，今日已签 ' + already + '，失败 ' + failed;
@@ -281,13 +287,14 @@
 
   content.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-checkin]');
-    if (!button || batchRunning) return;
+    if (!button || batchRunning || button.disabled) return;
     claimCheckin(Number(button.dataset.checkin));
   });
   checkinAllButton.addEventListener('click', checkinAll);
 
   async function loadAll() {
-    if (batchRunning) return;
+    if (batchRunning || entries.some((entry) =>
+      entry.checkinState && entry.checkinState.kind === 'pending')) return;
     content.className = 'empty';
     content.textContent = '加载中…';
     let files;
@@ -299,15 +306,18 @@
     }
     const credentials = (files.files || []).filter((file) =>
       file.provider === 'workbuddy' || file.type === 'workbuddy');
-    // 保留本页会话内已有的签到结果; 刷新额度不覆盖签到状态。
+    // 保留本页会话内已有的签到结果; 按 authIndex 匹配, 凭据重排不丢状态。
+    const prevByIndex = {};
+    entries.forEach((entry) => {
+      if (entry.authIndex && entry.checkinState) prevByIndex[entry.authIndex] = entry.checkinState;
+    });
     entries = credentials.map((credential, index) => {
-      const prev = entries[index] || {};
       return {
         name: credential.name || credential.auth_index || credential.id,
         authIndex: credential.auth_index || null,
         quota: null,
         quotaError: null,
-        checkinState: prev.authIndex === credential.auth_index ? prev.checkinState : undefined,
+        checkinState: prevByIndex[credential.auth_index] || undefined,
         index,
       };
     });
