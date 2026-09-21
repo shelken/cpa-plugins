@@ -12,3 +12,5 @@
 - [010 · 并发发版 record 回填竞态与哈希丢失](./010-release-record-race-and-backfill-loss.md)
 - [011 · 沙箱断言恒真且就绪判定打到陌生实例](./011-silent-pass-assertions-and-foreign-instance.md)
 - [012 · 交接清单覆盖了待办排序与进度可见性](./012-handoff-todos-vs-self-inserted-work.md)
+- [013 · 插件凭据被宿主元数据合并回写旧值且永不进刷新调度](./013-plugin-credential-metadata-overwrite-and-refresh-gap.md)
+- [014 · 修复叙事与测试路径写进了用户 README](./014-fix-narration-leaked-into-readme.md)
