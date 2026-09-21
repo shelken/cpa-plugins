@@ -3,11 +3,16 @@
 ## how-to
 
 - [plugin-release.md](how-to/plugin-release.md)：发布一个插件新版本时读，六步含全部命令
-- [static-manifest.md](how-to/static-manifest.md)：重录 workbuddy 官方流量、更新静态清单或审计协议字段时读
+- [static-manifest.md](how-to/static-manifest.md)：重录官方客户端流量、更新两个 provider 插件的静态清单或审计协议字段时读
 
 ## reference
 
 - [host-artifact-contract.md](reference/host-artifact-contract.md)：产物装不上、核对产物命名与校验规则时读
+- [feature-check-list.md](reference/feature-check-list.md)：新增或审查 provider 类型插件时逐条核对能力
+
+## postmortems
+
+[postmortems/README.md](../postmortems/README.md)：历次事故复盘索引，改到相关模块前先读对应篇目
 
 ## adr
 
