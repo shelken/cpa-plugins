@@ -325,7 +325,15 @@ func buildChatRequestBody(
 		tools = []any{}
 	}
 	if len(tools) > 0 {
-		parameters["tool_choice"] = "auto"
+		// 客户端未指定时保持官方客户端的 auto 基准, 指定时必须透传其意图 (点名函数、required、none)
+		if inReq.ToolChoice == nil {
+			parameters["tool_choice"] = "auto"
+		} else {
+			parameters["tool_choice"] = inReq.ToolChoice
+		}
+		if inReq.ParallelToolCalls != nil {
+			parameters["parallel_tool_calls"] = *inReq.ParallelToolCalls
+		}
 	}
 
 	modelConfig := map[string]any{
