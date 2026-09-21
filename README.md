@@ -1,6 +1,6 @@
 # CPA-PLUGINS
 
-使用一个仓库统一聚合、管理与分发所有的 CLIProxyAPI 插件。
+使用一个仓库统一聚合、管理与分发所有的 CLIProxyAPI 插件
 
 ## 功能
 
@@ -30,7 +30,7 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
   | jq -c '.plugins[] | select(.id=="workbuddy") | {version: .metadata.version, config_fields}'
 ```
 
-判据是 `version` 等于目标版本号，且声明过 `ConfigFields` 的插件 `config_fields` 非空。
+判据是 `version` 等于目标版本号，且声明过 `ConfigFields` 的插件 `config_fields` 非空
 
 ## 核心脚本
 
@@ -38,10 +38,10 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 | :--- | :--- | :--- |
 | `build-registry.go` | 扫描 `plugins/` 与 `external/` 生成 `registry.json`，`--check` 校验是否最新 | `go run scripts/build-registry.go --check` |
 | `verify-registry-install.go` | 端到端校验清单、下载 Release 产物、核对 SHA256 与动态库格式，必须传插件 id | `go run scripts/verify-registry-install.go workbuddy` |
-| `dev-sandbox.go` | 编译插件、生成沙箱配置、启动宿主并断言装载与注册；`--plugin` 可重复传参一次起多个插件，`--checks` 选断言子集 | `go run scripts/dev-sandbox.go --plugin workbuddy --plugin qwenworkcn --checks load,models` |
+| `dev-sandbox.go` | 编译插件、生成沙箱配置、启动宿主并断言装载与注册。`--plugin` 可重复传参一次起多个插件，`--checks` 选断言子集 | `go run scripts/dev-sandbox.go --plugin workbuddy --plugin qwenworkcn --checks load,models` |
 | `release.go` | 消费变更集产出版本、按宿主契约打包、用真实产物回填哈希，无参数打印子命令用法 | `go run scripts/release.go version --plugin workbuddy` |
 | `check-plugins.go` | 仓库不变量检查与发布门禁 | `go run scripts/check-plugins.go --strict` |
-| `verify-chat.go` | 对真实上游发对话请求验证对话链路；`-scenarios` 按场景选判据（`-list` 打印清单），不传则跑默认子集 | `go run scripts/verify-chat.go -base http://<host>:8317 -model workbuddy/hy3 -scenarios session,nonstream` |
+| `verify-chat.go` | 对真实上游发对话请求验证对话链路。`-scenarios` 按场景选判据（`-list` 打印清单），不传则跑默认子集 | `go run scripts/verify-chat.go -base http://<host>:8317 -model workbuddy/hy3 -scenarios session,nonstream` |
 | `management-api.go` | 调用宿主管理面接口 | `go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins` |
 
 各脚本的完整参数与行为以脚本自身的 usage 输出为准：
@@ -50,10 +50,18 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 go run scripts/release.go
 ```
 
+## 贡献
+
+- 新增自研插件：在 `plugins/<plugin-id>/` 建独立 Go 模块，按 [docs/reference/feature-check-list.md](docs/reference/feature-check-list.md) 核对能力，插件 README 与 `plugin.json` 一并补齐后跑 `go run scripts/build-registry.go` 更新聚合清单
+- 引入外部插件：在 `external/<plugin-id>.json` 声明上游 Release 或构建配方，不复制其源码
+- 改动合入前跑 `go run scripts/check-plugins.go` 与 `go run scripts/build-registry.go --check`
+- 提交信息用中文，遵循 `conventional commits`，插件改动带上版本意图（变更集），流程见 [docs/how-to/plugin-release.md](docs/how-to/plugin-release.md)
+
 ## 文档
 
 - [docs/README.md](docs/README.md)：文档索引
 - [docs/adr/](docs/adr/)：架构决策记录
+- [postmortems/README.md](postmortems/README.md)：历次事故复盘索引，改到相关模块前先读对应篇目
 
 ## 许可证
 
