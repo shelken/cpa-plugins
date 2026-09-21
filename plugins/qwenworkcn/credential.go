@@ -98,10 +98,7 @@ func (c *Credential) Expires() int64 {
 func (c *Credential) NextRefreshAfter() time.Time {
 	if c.Credentials.Expires > 0 {
 		expTime := time.UnixMilli(c.Credentials.Expires)
-		refreshTime := expTime.Add(-5 * time.Minute)
-		if refreshTime.After(nowFunc()) {
-			return refreshTime
-		}
+		return expTime.Add(-5 * time.Minute)
 	}
 	return nowFunc().Add(5 * time.Minute)
 }
@@ -137,6 +134,18 @@ func (c *Credential) ToAuthData(fileName string) (pluginapi.AuthData, error) {
 	if err != nil {
 		return pluginapi.AuthData{}, fmt.Errorf("serialize storage json: %w", err)
 	}
+	var metadata map[string]any
+	if err := json.Unmarshal(storageJSON, &metadata); err != nil {
+		return pluginapi.AuthData{}, fmt.Errorf("decode credential metadata: %w", err)
+	}
+	// 宿主保存时 Metadata 优先于 StorageJSON，必须携带本次登录的凭据。
+	metadata["type"] = "qwenworkcn"
+	// 插件没有宿主内置的 refresh lead，以实际剩余有效期声明刷新周期。
+	metadata["refresh_interval_seconds"] = int64(300)
+	if c.Credentials.Expires > 0 {
+		metadata["refresh_interval_seconds"] = max(int64(1), (c.Credentials.Expires-nowFunc().UnixMilli())/2000)
+		metadata["expires_at"] = time.UnixMilli(c.Credentials.Expires).UTC().Format(time.RFC3339Nano)
+	}
 
 	id := c.UserID
 	if id == "" {
@@ -154,9 +163,7 @@ func (c *Credential) ToAuthData(fileName string) (pluginapi.AuthData, error) {
 		Label:            label,
 		StorageJSON:      storageJSON,
 		NextRefreshAfter: c.NextRefreshAfter(),
-		Metadata: map[string]any{
-			"type": "qwenworkcn",
-		},
+		Metadata:         metadata,
 	}, nil
 }
 
