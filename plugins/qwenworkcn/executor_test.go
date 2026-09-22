@@ -124,6 +124,15 @@ func TestBuildChatRequestBody(t *testing.T) {
 	if mc["key"] != "pro" || mc["source"] != "system" {
 		t.Fatalf("model_config = %v", mc)
 	}
+
+	// 7. business 必须带 product/type: 上游按它解析模型目录, 缺失即 503 Model catalog unavailable
+	biz, ok := env["business"].(map[string]any)
+	if !ok {
+		t.Fatalf("business missing: %v", env["business"])
+	}
+	if biz["product"] != "qoder_work" || biz["type"] != "agent" {
+		t.Fatalf("business = %v, want product=qoder_work type=agent", biz)
+	}
 }
 
 func TestUnwrapSSEFrame(t *testing.T) {

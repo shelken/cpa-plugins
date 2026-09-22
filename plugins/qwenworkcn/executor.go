@@ -341,6 +341,21 @@ func buildChatRequestBody(
 		"max_output_tokens": maxOutputTokens,
 	}
 
+	// 服务端按 body.business 的 product/type 解析模型目录, 与 Cosy 业务头同源;
+	// 缺任一项上游即回 503 Model catalog unavailable (2026-09-22 实测)。
+	chatHeaders, err := manifest.RenderHeaderGroup("chat", map[string]string{
+		"modelKey":    modelID,
+		"modelSource": "system",
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("render chat headers for business identity: %w", err)
+	}
+	businessProduct := chatHeaders["Cosy-Business-Product"]
+	businessType := chatHeaders["Cosy-Business-Type"]
+	if businessProduct == "" || businessType == "" {
+		return "", nil, errors.New("manifest chat headers missing Cosy-Business-Product/Type")
+	}
+
 	reqID := uuid.NewString()
 
 	envelope := map[string]any{
@@ -372,6 +387,8 @@ func buildChatRequestBody(
 		"tools":            tools,
 		"parameters":       parameters,
 		"business": map[string]any{
+			"product":          businessProduct,
+			"type":             businessType,
 			"version":          "1",
 			"feature_switches": map[string]any{},
 		},
