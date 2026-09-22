@@ -34,7 +34,20 @@ type loginSession struct {
 	failures  int
 }
 
+const loginSessionTTL = 5 * time.Minute
+
 var loginSessions sync.Map
+
+func cleanupExpiredLoginSessions(now time.Time) {
+	loginSessions.Range(func(key, val any) bool {
+		if s, ok := val.(*loginSession); ok {
+			if now.Sub(s.CreatedAt) >= loginSessionTTL {
+				loginSessions.Delete(key)
+			}
+		}
+		return true
+	})
+}
 
 func generatePKCE() (verifier, challenge string, err error) {
 	b := make([]byte, 32)
@@ -93,6 +106,8 @@ func handleAuthLoginStart(ctx context.Context, manifest *ManifestV2, req plugina
 	}
 	u.RawQuery = q.Encode()
 
+	cleanupExpiredLoginSessions(nowFunc())
+
 	loginSessions.Store(nonce, &loginSession{
 		Verifier:  verifier,
 		MachineID: machineID,
@@ -103,11 +118,13 @@ func handleAuthLoginStart(ctx context.Context, manifest *ManifestV2, req plugina
 		Provider:  "qwenworkcn",
 		URL:       u.String(),
 		State:     nonce,
-		ExpiresAt: nowFunc().Add(5 * time.Minute),
+		ExpiresAt: nowFunc().Add(loginSessionTTL),
 	}, nil
 }
 
 func handleAuthLoginPoll(ctx context.Context, manifest *ManifestV2, req pluginapi.AuthLoginPollRequest) (pluginapi.AuthLoginPollResponse, error) {
+	cleanupExpiredLoginSessions(nowFunc())
+
 	val, ok := loginSessions.Load(req.State)
 	if !ok {
 		return pluginapi.AuthLoginPollResponse{
@@ -116,6 +133,13 @@ func handleAuthLoginPoll(ctx context.Context, manifest *ManifestV2, req pluginap
 		}, nil
 	}
 	session := val.(*loginSession)
+	if nowFunc().Sub(session.CreatedAt) >= loginSessionTTL {
+		loginSessions.Delete(req.State)
+		return pluginapi.AuthLoginPollResponse{
+			Status:  pluginapi.AuthLoginStatusError,
+			Message: "会话已过期，请重新发起登录",
+		}, nil
+	}
 
 	headers, err := manifest.RenderHeaderGroup("login.poll", map[string]string{
 		"userAgent": "qoderwork/" + manifest.Profile.CosyVersion,

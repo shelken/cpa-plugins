@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,9 +79,24 @@ func TestParseCredential(t *testing.T) {
 		t.Fatal("expected error on missing refresh, got nil")
 	}
 
-	missingMid := `{"credentials":{"access":"a","refresh":"r"}}`
+	missingMid := `{"userId":"u1","credentials":{"access":"a","refresh":"r"}}`
 	if _, err := parseCredential([]byte(missingMid)); err == nil {
 		t.Fatal("expected error on missing machineId, got nil")
+	}
+
+	missingUID := `{"machineId":"m","credentials":{"access":"a","refresh":"r"}}`
+	if _, err := parseCredential([]byte(missingUID)); err == nil {
+		t.Fatal("expected error on missing userId, got nil")
+	}
+
+	emptyUID := `{"userId":"","machineId":"m","credentials":{"access":"a","refresh":"r"}}`
+	if _, err := parseCredential([]byte(emptyUID)); err == nil {
+		t.Fatal("expected error on empty userId, got nil")
+	}
+
+	spaceUID := `{"userId":"   ","machineId":"m","credentials":{"access":"a","refresh":"r"}}`
+	if _, err := parseCredential([]byte(spaceUID)); err == nil {
+		t.Fatal("expected error on whitespace userId, got nil")
 	}
 }
 
@@ -401,13 +417,22 @@ func TestAuthRefresh(t *testing.T) {
 }
 
 func TestAuthParse(t *testing.T) {
-	valid := `{"credentials":{"access":"a","refresh":"r"},"machineId":"m"}`
+	valid := `{"userId":"u1","credentials":{"access":"a","refresh":"r"},"machineId":"m"}`
 	resp, err := handleAuthParse(pluginapi.AuthParseRequest{
 		FileName: "qwenworkcn-test.json",
 		RawJSON:  []byte(valid),
 	})
 	if err != nil || !resp.Handled {
 		t.Fatalf("handleAuthParse valid: Handled=%v, err=%v", resp.Handled, err)
+	}
+
+	missingUID := `{"credentials":{"access":"a","refresh":"r"},"machineId":"m"}`
+	resp, err = handleAuthParse(pluginapi.AuthParseRequest{
+		FileName: "qwenworkcn-test.json",
+		RawJSON:  []byte(missingUID),
+	})
+	if err != nil || resp.Handled {
+		t.Fatalf("handleAuthParse missing UID: Handled=%v (want false), err=%v", resp.Handled, err)
 	}
 
 	invalid := `{"bad":"json"`
@@ -418,4 +443,84 @@ func TestAuthParse(t *testing.T) {
 	if err != nil || resp.Handled {
 		t.Fatalf("handleAuthParse invalid: Handled=%v, err=%v", resp.Handled, err)
 	}
+}
+
+func TestAuthLoginSessionExpiration(t *testing.T) {
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+
+	fixedNow := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	current := fixedNow
+	origNow := nowFunc
+	defer func() { nowFunc = origNow }()
+	nowFunc = func() time.Time { return current }
+
+	// 1. 创建 session 1 (在 T0)
+	resp1, err := handleAuthLoginStart(context.Background(), m, pluginapi.AuthLoginStartRequest{})
+	if err != nil {
+		t.Fatalf("start session 1: %v", err)
+	}
+	if _, ok := loginSessions.Load(resp1.State); !ok {
+		t.Fatal("session 1 should exist in loginSessions")
+	}
+
+	// 2. 时间推进 6 分钟 (超过 5 分钟 TTL)
+	current = fixedNow.Add(6 * time.Minute)
+
+	// 3. 创建 session 2 (在 T0+6m)
+	resp2, err := handleAuthLoginStart(context.Background(), m, pluginapi.AuthLoginStartRequest{})
+	if err != nil {
+		t.Fatalf("start session 2: %v", err)
+	}
+
+	// 验证：过期会话 session 1 应被清除，未过期会话 session 2 必须存在
+	if _, ok := loginSessions.Load(resp1.State); ok {
+		t.Fatal("expired session 1 should be removed from loginSessions")
+	}
+	if _, ok := loginSessions.Load(resp2.State); !ok {
+		t.Fatal("active session 2 should still exist in loginSessions")
+	}
+
+	// 轮询已过期的 session 1 应该返回错误并提示过期
+	pollResp1, err := handleAuthLoginPoll(context.Background(), m, pluginapi.AuthLoginPollRequest{
+		State: resp1.State,
+	})
+	if err != nil {
+		t.Fatalf("poll session 1: %v", err)
+	}
+	if pollResp1.Status != pluginapi.AuthLoginStatusError {
+		t.Fatalf("poll session 1 status = %s, want error", pollResp1.Status)
+	}
+	if !strings.Contains(pollResp1.Message, "过期") {
+		t.Fatalf("poll session 1 message = %q, want containing '过期'", pollResp1.Message)
+	}
+
+	// 4. 单独验证：即使不调用 handleAuthLoginStart，handleAuthLoginPoll 也能在检测到自身过期时完成清理
+	current = fixedNow.Add(10 * time.Minute)
+	resp3, err := handleAuthLoginStart(context.Background(), m, pluginapi.AuthLoginStartRequest{})
+	if err != nil {
+		t.Fatalf("start session 3: %v", err)
+	}
+	if _, ok := loginSessions.Load(resp3.State); !ok {
+		t.Fatal("session 3 should exist")
+	}
+	// 推进 6 分钟
+	current = current.Add(6 * time.Minute)
+	pollResp3, err := handleAuthLoginPoll(context.Background(), m, pluginapi.AuthLoginPollRequest{
+		State: resp3.State,
+	})
+	if err != nil {
+		t.Fatalf("poll session 3: %v", err)
+	}
+	if pollResp3.Status != pluginapi.AuthLoginStatusError {
+		t.Fatalf("poll session 3 status = %s, want error", pollResp3.Status)
+	}
+	if _, ok := loginSessions.Load(resp3.State); ok {
+		t.Fatal("session 3 should be removed from loginSessions after poll detects expiration")
+	}
+
+	// 清理剩余的 session 2
+	loginSessions.Delete(resp2.State)
 }
