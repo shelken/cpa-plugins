@@ -69,9 +69,8 @@ func parseCredential(raw []byte) (*Credential, error) {
 	if strings.TrimSpace(cred.MachineID) == "" {
 		return nil, fmt.Errorf("machineId not found in credential")
 	}
-
-	if cred.UserID == "" {
-		cred.UserID = "qwenworkcn-user"
+	if strings.TrimSpace(cred.UserID) == "" {
+		return nil, fmt.Errorf("userId not found in credential")
 	}
 	if cred.DisplayName == "" {
 		cred.DisplayName = cred.UserID
@@ -147,9 +146,9 @@ func (c *Credential) ToAuthData(fileName string) (pluginapi.AuthData, error) {
 		metadata["expires_at"] = time.UnixMilli(c.Credentials.Expires).UTC().Format(time.RFC3339Nano)
 	}
 
-	id := c.UserID
+	id := strings.TrimSpace(c.UserID)
 	if id == "" {
-		id = "qwenworkcn-default"
+		return pluginapi.AuthData{}, fmt.Errorf("userId not found in credential")
 	}
 	label := c.DisplayName
 	if label == "" {
