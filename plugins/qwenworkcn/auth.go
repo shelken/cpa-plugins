@@ -33,6 +33,7 @@ type loginSession struct {
 	CreatedAt time.Time
 	failures  int
 }
+
 const loginSessionTTL = 5 * time.Minute
 
 var loginSessions sync.Map
