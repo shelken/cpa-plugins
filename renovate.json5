@@ -1,0 +1,51 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended", ":dependencyDashboard"],
+  timezone: "Asia/Shanghai",
+  schedule: ["before 4am"],
+  labels: ["dependencies", "renovate"],
+  commitMessagePrefix: "chore(deps):",
+  rebaseWhen: "conflicted",
+  prConcurrentLimit: 10,
+  prHourlyLimit: 0,
+
+  // 每个插件各自一个 go.mod，而 scripts/check-plugins.go 要求宿主 SDK 版本与 go 指令版本全仓一致
+  // （checkUniform），所以同一依赖必须一次覆盖全部模块：按依赖分组，不按模块拆成多个 PR。
+  packageRules: [
+    {
+      description: "宿主 SDK：三个插件必须同版本，一次改完",
+      matchManagers: ["gomod"],
+      matchDepNames: ["github.com/router-for-me/CLIProxyAPI/v7"],
+      groupName: "宿主 SDK (CLIProxyAPI)",
+      automerge: false,
+    },
+    {
+      description: "go 指令版本同样要求全仓一致",
+      matchManagers: ["gomod"],
+      matchDatasources: ["golang-version"],
+      groupName: "Go 版本指令",
+      automerge: false,
+    },
+    {
+      description: "GitHub Actions：钉 digest 并合并成一个 PR",
+      matchManagers: ["github-actions"],
+      pinDigests: true,
+      groupName: "GitHub Actions",
+      automerge: false,
+    },
+  ],
+
+  // external/*.json 声明上游插件的版本与其归属仓库，两者在同一文件里：
+  // 一条正则同时取到版本（currentValue）与去查 Release 的仓库（depName）。
+  customManagers: [
+    {
+      customType: "regex",
+      fileMatch: ["(^|/)external/[^/]+\\.json$"],
+      matchStrings: [
+        "(?s)\"version\":\\s*\"(?<currentValue>[^\"]+)\".*?\"repository\":\\s*\"https://github\\.com/(?<depName>[^\"]+)\"",
+      ],
+      datasourceTemplate: "github-releases",
+      versioningTemplate: "semver-coerced",
+    },
+  ],
+}

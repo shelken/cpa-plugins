@@ -1,0 +1,35 @@
+name: Renovate Config
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "renovate.json5"
+      - ".github/workflows/renovate-validate.yml"
+  pull_request:
+    paths:
+      - "renovate.json5"
+      - ".github/workflows/renovate-validate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate renovate.json5
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 配置写错时 Renovate 只会静默不识别, 所以在 CI 里用官方校验器兜住:
+      # 结构、预设名、规则字段都对得上才算过。
+      - name: Validate config
+        run: npx --yes --package renovate -- renovate-config-validator --strict renovate.json5
