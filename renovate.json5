@@ -40,7 +40,7 @@
   customManagers: [
     {
       customType: "regex",
-      fileMatch: ["(^|/)external/[^/]+\\.json$"],
+      managerFilePatterns: ["/(^|/)external/[^/]+\\.json$/"],
       matchStrings: [
         "(?s)\"version\":\\s*\"(?<currentValue>[^\"]+)\".*?\"repository\":\\s*\"https://github\\.com/(?<depName>[^\"]+)\"",
       ],
