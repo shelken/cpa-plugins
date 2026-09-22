@@ -39,20 +39,21 @@ type chatMessage struct {
 	StopReason       string     `json:"stop_reason,omitempty"`
 }
 
+// chatCompletionRequest 只声明上游信封确实有落点的字段。
+// 其余 OpenAI 采样参数 (temperature / verbosity / store / stream_options) 在本协议里没有位置:
+// 官方客户端抓包的 parameters 只有 context_length 与 max_tokens, 静态清单也没有请求体白名单,
+// 凭空加字段等于发明协议。客户端仍可发送它们 (JSON 解码会忽略未知字段), 插件只是不承诺效果,
+// 因此这里不声明 —— 声明了却又读不到, 会让下一个维护者以为它们已被支持。
 type chatCompletionRequest struct {
 	Model             string        `json:"model"`
 	Messages          []chatMessage `json:"messages"`
 	Stream            bool          `json:"stream,omitempty"`
-	StreamOptions     any           `json:"stream_options,omitempty"`
-	Temperature       *float64      `json:"temperature,omitempty"`
 	MaxTokens         *int          `json:"max_tokens,omitempty"`
 	Tools             []any         `json:"tools,omitempty"`
 	ToolChoice        any           `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool         `json:"parallel_tool_calls,omitempty"`
 	ReasoningEffort   string        `json:"reasoning_effort,omitempty"`
 	ReasoningSummary  string        `json:"reasoning_summary,omitempty"`
-	Verbosity         string        `json:"verbosity,omitempty"`
-	Store             *bool         `json:"store,omitempty"`
 	ExtraVars         any           `json:"extra_vars,omitempty"`
 }
 

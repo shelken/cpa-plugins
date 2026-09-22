@@ -416,3 +416,41 @@ func TestToolChoicePassthrough(t *testing.T) {
 		}
 	})
 }
+
+// TestUnsupportedSamplingParamsNotForwarded 钉住 README「能力边界」里那条声明:
+// Cosy 信封没有 temperature / verbosity / store / stream_options 的落点,
+// 客户端发了也不上行 —— 若哪天有人把它们塞进信封, 这条会红, 逼着先拿出抓包依据。
+func TestUnsupportedSamplingParamsNotForwarded(t *testing.T) {
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	trueVal := true
+	cfg := &PluginConfig{Enabled: true, EnableModelPrefix: &trueVal, ModelPrefix: "qwenworkcn"}
+	raw := `{"model":"qwenworkcn/pro","messages":[{"role":"user","content":"hi"}],"stream":true,
+		"temperature":0.2,"top_p":0.9,"verbosity":"low","store":true,"stream_options":{"include_usage":false}}`
+
+	_, body, err := buildChatRequestBody(cfg, []byte(raw), m, "11111111-2222-3333-4444-555555555555")
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+	var envBody map[string]any
+	if err := json.Unmarshal(body, &envBody); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	params, _ := envBody["parameters"].(map[string]any)
+	for _, key := range []string{"temperature", "top_p", "verbosity", "store", "stream_options"} {
+		if _, ok := params[key]; ok {
+			t.Fatalf("parameters 不应出现 %s: 上游没有这个落点, 加它等于发明协议", key)
+		}
+		if _, ok := envBody[key]; ok {
+			t.Fatalf("信封顶层不应出现 %s", key)
+		}
+	}
+	// 有落点的那几个仍在, 确认不是整块 parameters 丢了
+	for _, key := range []string{"max_tokens", "context_length", "reasoning_effort"} {
+		if _, ok := params[key]; !ok {
+			t.Fatalf("parameters 缺少 %s", key)
+		}
+	}
+}
