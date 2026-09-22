@@ -47,6 +47,10 @@ curl -H "Authorization: Bearer <your-management-key>" http://127.0.0.1:8317/v0/m
 | `enabled` | boolean | `false` | 是否装载并启用本探针插件 |
 | `priority` | integer | `0` | 插件在宿主中的调用优先级 |
 
+## 贡献
+
+插件源码在 `plugins/echo-probe/`，与服务端共用同一个 C ABI 契约，改动后按 [docs/how-to/plugin-release.md](../../docs/how-to/plugin-release.md) 升版本发版
+
 ## 许可证
 
 MIT License

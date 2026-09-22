@@ -377,6 +377,10 @@ func checkChangesets(r *report, baseRef string) {
 			// 单元测试不进入发布动态库, 不触发版本变更集门禁
 			continue
 		}
+		if strings.HasSuffix(parts[len(parts)-1], ".md") {
+			// 文档改动不进入发布动态库, 不触发版本变更集门禁
+			continue
+		}
 		codeChanges[id] = true
 	}
 
