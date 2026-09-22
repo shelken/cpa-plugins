@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -338,5 +339,118 @@ func TestReasoningEffortPassthrough(t *testing.T) {
 	}
 	if tested == 0 {
 		t.Fatal("没有任何模型被覆盖, 用例失去意义")
+	}
+}
+
+// 客户端点名函数或断言 none 时必须原样上行, 未指定时保持官方客户端基准 auto。
+func TestToolChoicePassthrough(t *testing.T) {
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	trueVal := true
+	cfg := &PluginConfig{Enabled: true, EnableModelPrefix: &trueVal, ModelPrefix: "qwenworkcn"}
+	const sessionID = "11111111-2222-3333-4444-555555555555"
+	const tools = `[{"type":"function","function":{"name":"get_time"}},{"type":"function","function":{"name":"get_weather"}}]`
+
+	cases := []struct {
+		name        string
+		raw         string
+		wantChoice  any
+		wantPresent bool
+	}{
+		{
+			name:        "点名函数",
+			raw:         `{"model":"qwenworkcn/pro","messages":[{"role":"user","content":"hi"}],"tools":` + tools + `,"tool_choice":{"type":"function","function":{"name":"get_weather"}}}`,
+			wantChoice:  map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}},
+			wantPresent: true,
+		},
+		{
+			name:        "禁止调用",
+			raw:         `{"model":"qwenworkcn/pro","messages":[{"role":"user","content":"hi"}],"tools":` + tools + `,"tool_choice":"none"}`,
+			wantChoice:  "none",
+			wantPresent: true,
+		},
+		{
+			name:        "未指定回落 auto",
+			raw:         `{"model":"qwenworkcn/pro","messages":[{"role":"user","content":"hi"}],"tools":` + tools + `}`,
+			wantChoice:  "auto",
+			wantPresent: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, body, err := buildChatRequestBody(cfg, []byte(tc.raw), m, sessionID)
+			if err != nil {
+				t.Fatalf("buildChatRequestBody: %v", err)
+			}
+			var envBody map[string]any
+			if err := json.Unmarshal(body, &envBody); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
+			}
+			params, _ := envBody["parameters"].(map[string]any)
+			got := params["tool_choice"]
+			if tc.wantPresent && got == nil {
+				t.Fatal("上游 parameters 缺少 tool_choice")
+			}
+			if !reflect.DeepEqual(got, tc.wantChoice) {
+				t.Fatalf("上游 parameters.tool_choice = %#v, 期望 %#v", got, tc.wantChoice)
+			}
+		})
+	}
+
+	t.Run("并行开关透传", func(t *testing.T) {
+		raw := `{"model":"qwenworkcn/pro","messages":[{"role":"user","content":"hi"}],"tools":` + tools + `,"parallel_tool_calls":false}`
+		_, body, err := buildChatRequestBody(cfg, []byte(raw), m, sessionID)
+		if err != nil {
+			t.Fatalf("buildChatRequestBody: %v", err)
+		}
+		var envBody map[string]any
+		if err := json.Unmarshal(body, &envBody); err != nil {
+			t.Fatalf("unmarshal envelope: %v", err)
+		}
+		params, _ := envBody["parameters"].(map[string]any)
+		if got, ok := params["parallel_tool_calls"]; !ok || got != false {
+			t.Fatalf("上游 parameters.parallel_tool_calls = %#v, 期望 false", got)
+		}
+	})
+}
+
+// TestUnsupportedSamplingParamsNotForwarded 钉住 README「能力边界」里那条声明:
+// Cosy 信封没有 temperature / verbosity / store / stream_options 的落点,
+// 客户端发了也不上行 —— 若哪天有人把它们塞进信封, 这条会红, 逼着先拿出抓包依据。
+func TestUnsupportedSamplingParamsNotForwarded(t *testing.T) {
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	trueVal := true
+	cfg := &PluginConfig{Enabled: true, EnableModelPrefix: &trueVal, ModelPrefix: "qwenworkcn"}
+	raw := `{"model":"qwenworkcn/pro","messages":[{"role":"user","content":"hi"}],"stream":true,
+		"temperature":0.2,"top_p":0.9,"verbosity":"low","store":true,"stream_options":{"include_usage":false}}`
+
+	_, body, err := buildChatRequestBody(cfg, []byte(raw), m, "11111111-2222-3333-4444-555555555555")
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+	var envBody map[string]any
+	if err := json.Unmarshal(body, &envBody); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	params, _ := envBody["parameters"].(map[string]any)
+	for _, key := range []string{"temperature", "top_p", "verbosity", "store", "stream_options"} {
+		if _, ok := params[key]; ok {
+			t.Fatalf("parameters 不应出现 %s: 上游没有这个落点, 加它等于发明协议", key)
+		}
+		if _, ok := envBody[key]; ok {
+			t.Fatalf("信封顶层不应出现 %s", key)
+		}
+	}
+	// 有落点的那几个仍在, 确认不是整块 parameters 丢了
+	for _, key := range []string{"max_tokens", "context_length", "reasoning_effort"} {
+		if _, ok := params[key]; !ok {
+			t.Fatalf("parameters 缺少 %s", key)
+		}
 	}
 }

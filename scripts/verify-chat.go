@@ -39,6 +39,7 @@ var scenarioRegistry = []scenario{
 	{"probe", 2, "重复请求缓存: 同一请求连发两次, 第二次应命中前缀缓存", runProbe},
 	{"nonstream", 1, "非流式链路: 插件聚合上游流式后返回完整 chat.completion", runNonStream},
 	{"tools", 3, "工具调用: 定义透传 / 非流式聚合 / 工具结果消费", runTools},
+	{"toolchoice", 3, "工具选择: 点名函数 / none / parallel_tool_calls=false 是否原样上行", runToolChoice},
 	{"effort", 2 * effortSamples, "思考深度与思维链: 最低档与最高档各采样取中位", runEffort},
 	{"guard", 1, "模型守卫: 未知模型 id 在路由阶段被拒 (不进入凭据与上游)", runGuard},
 }
@@ -387,6 +388,10 @@ type chatRequest struct {
 	tools    []toolSpec
 	// model 覆盖本次请求的模型 id (缺省用 runner 的被测模型), 供未知模型守卫场景使用。
 	model string
+	// toolChoice 是客户端原始的 tool_choice 形态 (字符串或对象), nil 表示未指定。
+	toolChoice any
+	// parallelToolCalls 只在客户端显式给出时上行, nil 表示未指定。
+	parallelToolCalls *bool
 }
 
 func (r *runner) chat(req chatRequest) (turn, error) {
@@ -407,7 +412,14 @@ func (r *runner) chat(req chatRequest) (turn, error) {
 	}
 	if len(req.tools) > 0 {
 		payload["tools"] = req.tools
-		payload["tool_choice"] = "auto"
+		if req.toolChoice == nil {
+			payload["tool_choice"] = "auto"
+		} else {
+			payload["tool_choice"] = req.toolChoice
+		}
+		if req.parallelToolCalls != nil {
+			payload["parallel_tool_calls"] = *req.parallelToolCalls
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -744,6 +756,50 @@ func runNonStream(s *session) {
 func runTools(s *session) {
 	fmt.Println("[工具调用] 工具定义透传 + 工具结果消费")
 	checkTools(s)
+}
+
+// runToolChoice 覆盖客户端工具选择意图是否原样上行: 未指定时回落 auto 的基准由 tools 场景守着。
+// 上游若只认 auto, none 这条会照旧调用工具、点名函数这条会调用别的函数或直接报错。
+func runToolChoice(s *session) {
+	fmt.Println("[工具选择] tool_choice 与 parallel_tool_calls 应原样上行")
+	tools := []toolSpec{weatherTool()}
+	prompt := []chatMessage{{Role: "user", Content: "北京现在天气怎么样? 必须用工具查, 不要凭记忆回答"}}
+
+	named, namedErr := s.chat(chatRequest{messages: prompt, tools: tools, toolChoice: map[string]any{
+		"type": "function", "function": map[string]any{"name": "get_weather"},
+	}})
+	switch {
+	case namedErr != nil:
+		s.record("点名函数", "FAIL", "请求失败: "+namedErr.Error()+" 响应头: "+truncate(named.rawHead, 80))
+	case len(named.toolCalls) == 1 && named.toolCalls[0].Function.Name == "get_weather":
+		s.record("点名函数", "PASS", "finish="+named.finishReason+", 调用 "+named.toolCalls[0].Function.Name)
+	default:
+		s.record("点名函数", "FAIL", fmt.Sprintf("点名的函数未被调用: finish=%s, tool_calls=%d, 正文 %s",
+			named.finishReason, len(named.toolCalls), truncate(named.content, 40)))
+	}
+
+	forbidden, forbiddenErr := s.chat(chatRequest{messages: prompt, tools: tools, toolChoice: "none"})
+	switch {
+	case forbiddenErr != nil:
+		s.record("tool_choice=none", "FAIL", "请求失败: "+forbiddenErr.Error()+" 响应头: "+truncate(forbidden.rawHead, 80))
+	case len(forbidden.toolCalls) > 0:
+		s.record("tool_choice=none", "FAIL", fmt.Sprintf("禁止调用工具却仍返回 tool_calls, 客户端约束被丢弃 (finish=%s)", forbidden.finishReason))
+	case strings.TrimSpace(forbidden.content) == "" && strings.TrimSpace(forbidden.reasoning) == "":
+		s.record("tool_choice=none", "FAIL", "既没有工具调用也没有正文, 该档位下无法判断约束是否生效")
+	default:
+		s.record("tool_choice=none", "PASS", "finish="+forbidden.finishReason+", 正文 "+truncate(forbidden.content, 40))
+	}
+
+	noParallel := false
+	parallel, parallelErr := s.chat(chatRequest{messages: prompt, tools: tools, parallelToolCalls: &noParallel})
+	switch {
+	case parallelErr != nil:
+		s.record("parallel_tool_calls=false", "FAIL", "请求失败: "+parallelErr.Error()+" 响应头: "+truncate(parallel.rawHead, 80))
+	case len(parallel.toolCalls) > 1:
+		s.record("parallel_tool_calls=false", "FAIL", fmt.Sprintf("仍返回 %d 个并发调用", len(parallel.toolCalls)))
+	default:
+		s.record("parallel_tool_calls=false", "PASS", fmt.Sprintf("HTTP %d, tool_calls=%d", parallel.status, len(parallel.toolCalls)))
+	}
 }
 
 // runGuard 验证宿主只接受自己报送过的模型 id: 未知 id 必须在路由阶段被拒

@@ -60,6 +60,7 @@ plugins:
 
 - 只注册 `chat-completions` 输入输出格式，不提供 Anthropic 与 Responses 入口
 - `count_tokens` 按请求体字节数除以 4 估算，不调用上游计数接口
+- 上游 Cosy 信封里只有 `max_tokens`、`context_length`、`reasoning_effort`（外加本插件补的 `tool_choice`、`parallel_tool_calls`）这几个落点，因此 `temperature`、`verbosity`、`store`、`stream_options` 收下即丢弃：客户端可以照常发送，但采样参数不会影响上游，也不会有报错。官方客户端抓包的 `parameters` 同样只带 `context_length` 与 `max_tokens`
 
 ## 发布与安装
 

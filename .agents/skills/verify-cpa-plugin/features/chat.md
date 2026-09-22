@@ -11,6 +11,7 @@
 - `chat-memory` 多轮里模型复现前文事实
 - `chat-effort` 客户端 `reasoning_effort` 真实改变上游思考深度
 - `chat-tools` 工具定义透传, 模型返回 `tool_calls` 并消费工具结果
+- `chat-tool-choice` 客户端 `tool_choice` 与 `parallel_tool_calls` 原样上行
 - `chat-model` 只接受宿主报送过的模型 id
 
 ## 场景与请求成本
@@ -23,6 +24,7 @@
 | `probe` | 重复请求缓存(二次)、用量上报 | 改了缓存相关字段、请求幂等性 |
 | `nonstream` | 非流式链路 | 改了流式聚合、`stream:false` 路径 |
 | `tools` | 工具调用 流式/非流式、工具结果消费 | 改了工具字段透传、分片拼接 |
+| `toolchoice` | 点名函数、`tool_choice=none`、`parallel_tool_calls=false` | 改了 `tool_choice` 或 `parallel_tool_calls` 的上行构造 |
 | `effort` | 思维链输出、思考深度传递 | 改了推理档位映射、`reasoning_effort` 传递 |
 | `guard` | 未知模型拒绝 | 改了模型注册、路由或清单装载 |
 
@@ -50,6 +52,9 @@
 | 工具调用 流式 | 带 `tools` 与 `tool_choice:auto` 的请求返回 `finish_reason:"tool_calls"`, 每个调用带非空 `id` 与函数名, `arguments` 是合法 JSON |
 | 工具调用 非流式 | 同一请求走聚合路径后仍带 `tool_calls` 与合法 `arguments` |
 | 工具结果消费 | 把首轮 `tool_calls` 与工具结果带回下一轮, 模型正文引用了工具返回的事实 |
+| 点名函数 | `tool_choice` 用对象形态点名 `get_weather` 时, 返回的 `tool_calls` 恰为该函数且 `finish_reason` 为 `tool_calls`; 返回别的函数或直接答正文即 FAIL (客户端约束被丢弃) |
+| `tool_choice=none` | 同请求带 `tool_choice:"none"` 时不得返回 `tool_calls`, 且要有正文或推理输出; 返回调用即 FAIL |
+| `parallel_tool_calls=false` | 显式给出该字段的请求被上游接受 (HTTP 2xx), 且返回的调用数不超过 1 |
 | 未知模型拒绝 | 未报送的模型 id 在路由阶段被拒 (400 `model_not_found`); 同沙箱内合法模型会走到凭据阶段 (无凭据时 503 `auth_not_found`), 说明二者处理阶段不同 |
 
 缓存判据要有可命中的公共前缀才有意义, 脚本默认用重复段落撑出足够长的 system 消息, 段落数由 `-prefix` 控制
