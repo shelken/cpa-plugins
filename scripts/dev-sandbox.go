@@ -358,6 +358,13 @@ func (s *sandbox) verifyHostVersion(sdkVersion string) error {
 	return nil
 }
 
+// cleanupHeader 清理 c-shared 顺带生成的同名头文件, 留在插件目录里属于构建垃圾。
+func (s *sandbox) cleanupHeader(library string) error {
+	header := strings.TrimSuffix(library, filepath.Ext(library)) + ".h"
+	_ = os.Remove(header)
+	return nil
+}
+
 func (s *sandbox) prepareLayout() error {
 	s.configPath = filepath.Join(s.sandboxDir, "config.yaml")
 	s.logPath = filepath.Join(s.sandboxDir, "host.log")
@@ -378,12 +385,48 @@ func (s *sandbox) buildPlugin(id string) error {
 	build.Env = append(os.Environ(), "CGO_ENABLED=1")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
+		// 本机默认 SDK 可能与 clang 不兼容 (27.0 的 tbd 含 arm64e.x1, tapi 报 unknown architecture);
+		// 仅在首次失败后换已知可用的 SDK 重试一次, 不预先覆盖, 避免掩盖未来 SDK 问题。
+		if _, set := os.LookupEnv("SDKROOT"); set {
+			return fmt.Errorf("构建插件 %s 失败: %w", id, err)
+		}
+		if compat := compatSDKRoot(); compat != "" {
+			fmt.Printf("[!] 默认 SDK 链接失败 (%v), 用 %s 重试\n", err, compat)
+			retry := exec.Command("go", "build", "-buildmode=c-shared", "-o", library, ".")
+			retry.Dir = s.pluginDirs[id]
+			retry.Env = append(sdkRootEnv(compat), "CGO_ENABLED=1")
+			retry.Stdout, retry.Stderr = os.Stdout, os.Stderr
+			if err := retry.Run(); err != nil {
+				return fmt.Errorf("构建插件 %s 失败 (SDKROOT=%s): %w", id, compat, err)
+			}
+			return s.cleanupHeader(library)
+		}
 		return fmt.Errorf("构建插件 %s 失败: %w", id, err)
 	}
-	// c-shared 会顺带生成同名头文件, 留在插件目录里属于构建垃圾
-	header := strings.TrimSuffix(library, filepath.Ext(library)) + ".h"
-	_ = os.Remove(header)
-	return nil
+	return s.cleanupHeader(library)
+}
+
+// sdkRootEnv 把指定 SDK 路径注入环境, 替换已有 SDKROOT。
+func sdkRootEnv(sdk string) []string {
+	env := os.Environ()
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "SDKROOT=") {
+			env[i] = "SDKROOT=" + sdk
+			return env
+		}
+	}
+	return append(env, "SDKROOT="+sdk)
+}
+
+// compatSDKRoot 按已知可用版本挑本机 SDK, 找不到返回空。
+func compatSDKRoot() string {
+	base := "/Library/Developer/CommandLineTools/SDKs"
+	for _, v := range []string{"MacOSX26.5.sdk", "MacOSX26.sdk", "MacOSX26.0.sdk"} {
+		if st, err := os.Stat(filepath.Join(base, v)); err == nil && st.IsDir() {
+			return filepath.Join(base, v)
+		}
+	}
+	return ""
 }
 
 func (s *sandbox) writeConfig() error {
