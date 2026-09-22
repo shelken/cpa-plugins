@@ -1,8 +1,13 @@
 # 插件发布
 
-适用场景：改动了 `plugins/<id>/` 下的代码，要把新版本发布出去。六步，全部命令可复制。
+适用场景：改动了 `plugins/<id>/` 下的代码，要把新版本发出去。
 
-前提：当前分支是 `main` 且已拉取最新。
+## 两条路径
+
+| 场景 | 你要做的 |
+| --- | --- |
+| 改插件代码 | 写变更集 → 提交 → 提 PR（不碰版本号） |
+| 发版 | 在 `main` 上跑一条命令 |
 
 ## 1. 写变更集
 
@@ -12,35 +17,44 @@
 {"bump": "patch", "note": "一句话描述改动"}
 ```
 
-`bump` 取 `patch`、`minor`、`major` 之一，多个变更集共存时取最高档。
+`bump` 取 `patch`、`minor`、`major` 之一，多个变更集共存时取最高档。变更集是唯一手写的东西：
+`plugin.json` 的 `version`、产物地址与 Go 版本字面量都由脚本产出，不要手改。
 
-## 2. 产出新版本
+## 2. 发版：一条命令
 
 ```bash
-go run scripts/release.go version --plugin <id>
+git pull origin main
+go run scripts/release.go publish --plugin <id>              # 发
+go run scripts/release.go publish --plugin <id> --dry-run    # 先看会发生什么（不写文件、不推送）
 ```
 
-脚本同步源码里的版本字面量、`plugin.json` 的 `version` 与三处产物地址，清空旧哈希，删除已消费的变更集，并打印新版本与标签名。
+脚本按固定顺序做完，任一步失败即停：
 
-## 3. 本地预检产物
+```
+check-plugins 门禁 → version（消费变更集） → build-registry → git commit → git tag <id>/v<X.Y.Z> → git push main → git push tag
+```
+
+顺序不是可选项：先提交后打标签，CI 收到标签时提交才一定在 `main` 上；版本产出的同时就把新地址写进
+`registry.json`，标签必须跟着推，否则 registry 指向不存在的资产。
+
+不满足前置条件时脚本直接拒绝，且不写任何文件：
+
+- 当前分支是 `main`
+- 工作区没有未提交的已跟踪改动
+- 不落后于 `origin/main`（本地领先允许：上次提交成功但推送失败时，重跑接着推）
+- 有未消费的变更集；若已被消费，本次只补提交与标签的推送，可重复执行
+
+## 3. 本地预检产物（可选）
 
 ```bash
 go run scripts/release.go pack --plugin <id> --out dist
-go run scripts/check-plugins.go
 ```
 
 `pack` 只支持当前平台，产物按宿主契约命名并自检。此时 `sha256` 待回填属于预期警告，不要用 `--release-ready`。
 
-## 4. 提交并推标签
+## 4. 多插件发版
 
-```bash
-git add plugins/<id> && git commit
-git tag <id>/v<X.Y.Z> && git push origin main <id>/v<X.Y.Z>
-```
-
-多插件发版时标签逐个推送：等上一条流水线的 `record` 作业完成回填后，再推下一个标签，避免并发回填互相覆盖。
-
-标签版本号必须与 `plugin.json` 一致，否则产物地址指向不存在的资产。
+逐个跑 `publish`，等上一条流水线的 `record` 作业完成回填后再发下一个，避免并发回填互相覆盖。
 
 ## 5. CI 回填哈希
 
@@ -74,6 +88,26 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 ```
 
 判据是 `version` 等于新标签的版本号，且声明过 `ConfigFields` 的插件 `config_fields` 非空。两者缺一，说明宿主仍跑旧产物。
+
+## 7. 卡住了怎么办
+
+| 现象 | 处理 |
+| --- | --- |
+| `check-plugins` 提示 `插件 <id> 没有对应标签` | 就是没发完：按提示跑 `publish` 补上提交与标签 |
+| `publish` 提交成功但 push 失败 | 直接重跑 `publish`：它检测到本地领先，会补推提交与标签 |
+| 标签推错、要重发同一版本 | 见第 5 节的删标签重推 |
+| `record` 作业失败 | 在同一提交上重打标签触发全新流水线，禁止本地代填哈希 |
+
+## 底层子命令
+
+`publish` 只是把下面这些串起来；排查时可以单独跑：
+
+| 子命令 | 作用 |
+| --- | --- |
+| `version --plugin <id>` | 消费变更集，写 `plugin.json` 的版本与三处地址、Go 版本字面量 |
+| `pack --plugin <id> --out dist` | 本机打包预检（命名与结构） |
+| `record --plugin <id>` | 用 dist 里的 zip 回填哈希并重建 registry（正式回填由 CI 做） |
+| `publish --plugin <id>` | 一条命令做完上面全部，另加门禁、提交、打标签、推送 |
 
 ## 相关
 

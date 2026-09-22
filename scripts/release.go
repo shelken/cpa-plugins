@@ -10,6 +10,11 @@ package main
 //	go run scripts/release.go version --plugin <id>
 //	go run scripts/release.go pack    --plugin <id> [--version <v>] [--out dist]
 //	go run scripts/release.go record  --plugin <id> [--dist dist]
+//	go run scripts/release.go publish --plugin <id> [--dry-run] [--no-push]
+//
+// publish 把发版收敛成一条命令: 预检 → version → 重建 registry → 门禁 → 提交 → 打标签 → 推送。
+// 顺序、命名与推送次序由脚本固定, 人只写变更集; 变更集已被消费(版本已 bump 但标签未推)时
+// 只补标签, 可重复执行。--dry-run 只打印将要发生的事。
 //
 // version 消费变更集, 计算并更新 plugin.json 版本与产物地址, 同步 Go 版本字面量。
 // pack    构建当前平台动态库, 打成宿主契约命名的 zip, 打印 sha256 与 size; 产物用于本地预检,
@@ -123,51 +128,50 @@ func bumpVersion(current, bump string) (string, error) {
 
 // ---------------- 任务: version ----------------
 
-func runVersion(args []string) error {
-	fs := flag.NewFlagSet("version", flag.ExitOnError)
-	pluginID := fs.String("plugin", "", "插件 id")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if strings.TrimSpace(*pluginID) == "" {
-		fs.Usage()
-		return fmt.Errorf("必须指定 --plugin")
-	}
-	id := strings.TrimSpace(*pluginID)
+// versionPlan 是一次版本产出的前置计算: 变更集、当前版本与目标版本。
+// version 与 publish 共用同一份计算, 保证 dry-run 打印的版本与实际执行一致。
+type versionPlan struct {
+	currentVersion string
+	nextVersion    string
+	changesetFiles []string
+	manifest       map[string]any
+	manifestPath   string
+}
 
+func planNextVersion(id string) (*versionPlan, error) {
 	changesetsDir := filepath.Join("plugins", id, "changesets")
 	dirInfo, err := os.Stat(changesetsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("变更集目录不存在: %s", changesetsDir)
+			return nil, fmt.Errorf("变更集目录不存在: %s", changesetsDir)
 		}
-		return fmt.Errorf("访问变更集目录失败: %w", err)
+		return nil, fmt.Errorf("访问变更集目录失败: %w", err)
 	}
 	if !dirInfo.IsDir() {
-		return fmt.Errorf("变更集路径不是目录: %s", changesetsDir)
+		return nil, fmt.Errorf("变更集路径不是目录: %s", changesetsDir)
 	}
 
 	changesetFiles, err := filepath.Glob(filepath.Join(changesetsDir, "*.json"))
 	if err != nil {
-		return fmt.Errorf("扫描变更集文件失败: %w", err)
+		return nil, fmt.Errorf("扫描变更集文件失败: %w", err)
 	}
 	if len(changesetFiles) == 0 {
-		return fmt.Errorf("变更集目录中没有 json 文件: %s", changesetsDir)
+		return nil, fmt.Errorf("变更集目录中没有 json 文件: %s", changesetsDir)
 	}
 
 	maxRank := bumpRankNone
 	for _, csPath := range changesetFiles {
 		data, err := os.ReadFile(csPath)
 		if err != nil {
-			return fmt.Errorf("读取变更集 %s 失败: %w", csPath, err)
+			return nil, fmt.Errorf("读取变更集 %s 失败: %w", csPath, err)
 		}
 		var cs changeset
 		if err := json.Unmarshal(data, &cs); err != nil {
-			return fmt.Errorf("解析变更集 %s 失败: %w", csPath, err)
+			return nil, fmt.Errorf("解析变更集 %s 失败: %w", csPath, err)
 		}
 		rank, err := parseBumpRank(cs.Bump)
 		if err != nil {
-			return fmt.Errorf("变更集 %s: %w", csPath, err)
+			return nil, fmt.Errorf("变更集 %s: %w", csPath, err)
 		}
 		if rank > maxRank {
 			maxRank = rank
@@ -183,23 +187,51 @@ func runVersion(args []string) error {
 	case bumpRankMajor:
 		highestBump = "major"
 	default:
-		return fmt.Errorf("未解析到有效的 bump 级别")
+		return nil, fmt.Errorf("未解析到有效的 bump 级别")
 	}
 
 	manifestPath := filepath.Join("plugins", id, "plugin.json")
 	manifest, err := readPluginManifest(manifestPath)
 	if err != nil {
-		return fmt.Errorf("读取 plugin.json 失败: %w", err)
+		return nil, fmt.Errorf("读取 plugin.json 失败: %w", err)
 	}
 	currentVersion := manifestString(manifest, "version")
 	if currentVersion == "" {
-		return fmt.Errorf("plugin.json 缺少 version")
+		return nil, fmt.Errorf("plugin.json 缺少 version")
 	}
 
 	nextVersion, err := bumpVersion(currentVersion, highestBump)
 	if err != nil {
-		return fmt.Errorf("计算新版本号失败: %w", err)
+		return nil, fmt.Errorf("计算新版本号失败: %w", err)
 	}
+
+	return &versionPlan{
+		currentVersion: currentVersion,
+		nextVersion:    nextVersion,
+		changesetFiles: changesetFiles,
+		manifest:       manifest,
+		manifestPath:   manifestPath,
+	}, nil
+}
+
+func runVersion(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ExitOnError)
+	pluginID := fs.String("plugin", "", "插件 id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*pluginID) == "" {
+		fs.Usage()
+		return fmt.Errorf("必须指定 --plugin")
+	}
+	id := strings.TrimSpace(*pluginID)
+
+	plan, err := planNextVersion(id)
+	if err != nil {
+		return err
+	}
+	nextVersion := plan.nextVersion
+	manifest, manifestPath, changesetFiles := plan.manifest, plan.manifestPath, plan.changesetFiles
 
 	goFiles, err := filepath.Glob(filepath.Join("plugins", id, "*.go"))
 	if err != nil {
@@ -285,6 +317,193 @@ func runVersion(args []string) error {
 	tag := fmt.Sprintf("%s/v%s", id, nextVersion)
 	fmt.Printf("新版本: %s\n", nextVersion)
 	fmt.Printf("标签: %s\n", tag)
+	return nil
+}
+
+// ---------------- 任务: publish ----------------
+
+// publish 一条命令做完发版: 预检 → 产出新版本 → 重建 registry → 门禁 → 提交 → 打标签 → 推送。
+// 存在的理由: 手工按文档跑六步时, 顺序与命名全靠人记 —— 版本产出却没打标签会让 registry 的
+// 产物地址指向不存在的资产, 而"先 tag 后 commit"会让 CI 拿到标签时提交还不在 main 上。
+// 这里把顺序写成代码, 人只写变更集。
+func runPublish(args []string) error {
+	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
+	pluginID := fs.String("plugin", "", "插件 id")
+	dryRun := fs.Bool("dry-run", false, "只打印将要执行的动作, 不写文件、不提交、不推送")
+	noPush := fs.Bool("no-push", false, "提交与打标签后不推送 (自检用)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*pluginID) == "" {
+		return fmt.Errorf("必须指定 --plugin")
+	}
+	id := strings.TrimSpace(*pluginID)
+
+	if err := preflightPublish(); err != nil {
+		return err
+	}
+
+	changesets, err := filepath.Glob(filepath.Join("plugins", id, "changesets", "*.json"))
+	if err != nil {
+		return fmt.Errorf("扫描变更集文件失败: %w", err)
+	}
+
+	// 变更集已被消费: 版本已 bump, 缺的是标签。只补标签, 保证重跑幂等。
+	if len(changesets) == 0 {
+		manifest, err := readPluginManifest(filepath.Join("plugins", id, "plugin.json"))
+		if err != nil {
+			return fmt.Errorf("读取 plugin.json 失败: %w", err)
+		}
+		version := manifestString(manifest, "version")
+		if version == "" {
+			return fmt.Errorf("plugin.json 缺少 version")
+		}
+		tag := fmt.Sprintf("%s/v%s", id, version)
+		if tagExists(tag) {
+			fmt.Printf("标签 %s 已存在, 本次只补提交与标签的推送 (可重复执行)\n", tag)
+		} else {
+			fmt.Printf("变更集已消费 (plugin.json = %s), 补标签与推送: %s\n", version, tag)
+		}
+		if *dryRun {
+			printPublishTail(tag)
+			return nil
+		}
+		if err := tagAndPush(tag, *noPush); err != nil {
+			return err
+		}
+		printPublishTail(tag)
+		return nil
+	}
+
+	plan, err := planNextVersion(id)
+	if err != nil {
+		return err
+	}
+	tag := fmt.Sprintf("%s/v%s", id, plan.nextVersion)
+	if tagExists(tag) {
+		return fmt.Errorf("标签 %s 已存在但变更集未消费: 变更集与版本可能重复, 先确认再发布", tag)
+	}
+
+	fmt.Printf("插件 %s: %s -> %s (标签 %s)\n", id, plan.currentVersion, plan.nextVersion, tag)
+	if *dryRun {
+		fmt.Println("将依次执行: check-plugins → version → build-registry → git add/commit → git tag → git push(main, tag)")
+		printPublishTail(tag)
+		return nil
+	}
+
+	// 先过与 CI 同一条门禁: 它检查的是仓库既有状态, 必须在写文件之前跑,
+	// 否则"刚 bump 还没打标签"会被它自己当成问题报出来。
+	if err := goRunScript("check-plugins.go"); err != nil {
+		return err
+	}
+	if err := runVersion([]string{"--plugin", id}); err != nil {
+		return err
+	}
+	if err := goRunScript("build-registry.go"); err != nil {
+		return err
+	}
+	if err := gitRun("add", filepath.Join("plugins", id), "registry.json"); err != nil {
+		return err
+	}
+	if err := gitRun("commit", "-m",
+		fmt.Sprintf("chore(%s): %s -> %s", id, plan.currentVersion, plan.nextVersion)); err != nil {
+		return err
+	}
+	if err := tagAndPush(tag, *noPush); err != nil {
+		return err
+	}
+	printPublishTail(tag)
+	return nil
+}
+
+// preflightPublish 发布前置条件: 在 main 上、无未提交的已跟踪改动、不落后于 origin/main。
+// 允许"本地领先"这种状态 —— 上一次发布提交成功但推送失败时, 重跑要能接着把提交与标签推上去。
+func preflightPublish() error {
+	branch := gitOutput("rev-parse", "--abbrev-ref", "HEAD")
+	if branch != "main" {
+		return fmt.Errorf("发布必须在 main 上执行, 当前分支 %q", branch)
+	}
+	if dirty := gitOutput("status", "--porcelain", "--untracked-files=no"); dirty != "" {
+		return fmt.Errorf("工作区有未提交的已跟踪改动, 先提交或还原:\n%s", dirty)
+	}
+	if err := gitRun("fetch", "origin", "main"); err != nil {
+		return err
+	}
+	local, remote := gitOutput("rev-parse", "HEAD"), gitOutput("rev-parse", "origin/main")
+	if local == "" || remote == "" {
+		return fmt.Errorf("读取 HEAD 或 origin/main 失败")
+	}
+	if local == remote {
+		return nil
+	}
+	if isAncestor(remote, local) {
+		fmt.Printf("[i] 本地领先 origin/main (%s -> %s), 发布时会一起推送\n", shortSHA(remote), shortSHA(local))
+		return nil
+	}
+	return fmt.Errorf("HEAD (%s) 落后或分叉于 origin/main (%s), 先 git pull origin main", shortSHA(local), shortSHA(remote))
+}
+
+func isAncestor(maybeAncestor, ref string) bool {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", maybeAncestor, ref)
+	return cmd.Run() == nil
+}
+
+// tagAndPush 固定推送次序: 先 main 再标签, 保证 CI 收到标签时提交已在 main 上。
+func tagAndPush(tag string, noPush bool) error {
+	if tagExists(tag) {
+		fmt.Printf("标签 %s 已存在, 跳过创建\n", tag)
+	} else if err := gitRun("tag", tag); err != nil {
+		return err
+	}
+	if noPush {
+		fmt.Printf("标签 %s 就绪 (--no-push, 未推送)\n", tag)
+		return nil
+	}
+	if err := gitRun("push", "origin", "main"); err != nil {
+		return err
+	}
+	return gitRun("push", "origin", tag)
+}
+
+func printPublishTail(tag string) {
+	fmt.Printf("\n下一步: 1) 等 CI 的 record 作业回填 sha256; 2) git pull origin main; ")
+	fmt.Printf("3) go run scripts/verify-registry-install.go %s\n", strings.SplitN(tag, "/", 2)[0])
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
+}
+
+func gitOutput(args ...string) string {
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitRun(args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git %s 失败: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func tagExists(tag string) bool {
+	return gitOutput("tag", "--list", tag) == tag
+}
+
+func goRunScript(name string, args ...string) error {
+	cmd := exec.Command("go", append([]string{"run", filepath.Join("scripts", name)}, args...)...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go run scripts/%s 失败: %w", name, err)
+	}
 	return nil
 }
 
@@ -617,10 +836,11 @@ func fileDigest(path string) (string, int64, error) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "用法: go run scripts/release.go <version|pack|record> [选项]\n\n")
+		fmt.Fprintf(os.Stderr, "用法: go run scripts/release.go <version|pack|record|publish> [选项]\n\n")
 		fmt.Fprintf(os.Stderr, "  version --plugin <id>\n")
 		fmt.Fprintf(os.Stderr, "  pack    --plugin <id> [--version <v>] [--out dist]\n")
 		fmt.Fprintf(os.Stderr, "  record  --plugin <id> [--dist dist] [--skip-registry]\n")
+		fmt.Fprintf(os.Stderr, "  publish --plugin <id> [--dry-run] [--no-push]\n")
 		os.Exit(2)
 	}
 
@@ -632,6 +852,8 @@ func main() {
 		err = runPack(os.Args[2:])
 	case "record":
 		err = runRecord(os.Args[2:])
+	case "publish":
+		err = runPublish(os.Args[2:])
 	default:
 		err = fmt.Errorf("未知子命令 %q", os.Args[1])
 	}

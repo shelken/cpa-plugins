@@ -83,6 +83,7 @@ func main() {
 		checkIdentity(r, id, manifest)
 		checkArtifacts(r, id, manifest, matrix, *releaseReady)
 		checkDocs(r, dir, id)
+		checkVersionTag(r, id, dir, manifest, *releaseReady)
 
 		version, goDirective := readGoMod(r, dir, id)
 		if version != "" {
@@ -214,6 +215,32 @@ func checkArtifacts(r *report, id string, m manifest, matrix map[string]bool, re
 			r.fail("%s: %s 的 sha256 不是 64 位十六进制", id, key)
 		}
 	}
+}
+
+// checkVersionTag 要求已产出的版本有同名标签: registry 的产物地址指向该标签的 Release 资产,
+// 标签不存在时用户装不上 (2026-09-22 实测该窗口: 版本 bump 了但标签没推)。
+// external 声明(SDK 直接引用上游 Release)的插件不由本仓发产物, 跳过;
+// 变更集还没消费说明版本尚未产出, 也跳过 (否则发布过程中会被自己报出来)。
+func checkVersionTag(r *report, dirID, dir string, m manifest, releaseReady bool) {
+	version := strings.TrimSpace(m.Version)
+	if version == "" || len(m.Install.Artifacts) == 0 {
+		return
+	}
+	if pending, err := filepath.Glob(filepath.Join(dir, "changesets", "*.json")); err == nil && len(pending) > 0 {
+		return
+	}
+	tag := fmt.Sprintf("%s/v%s", dirID, version)
+	if out, err := exec.Command("git", "tag", "--list", tag).Output(); err == nil &&
+		strings.TrimSpace(string(out)) == tag {
+		return
+	}
+	msg := fmt.Sprintf("%s: plugin.json 版本 %s 没有对应标签 %s, registry 的产物地址会指向不存在的资产; 跑 go run scripts/release.go publish --plugin %s 补上",
+		dirID, version, tag, dirID)
+	if releaseReady {
+		r.fail("%s", msg)
+		return
+	}
+	r.warn("%s", msg)
 }
 
 func checkDocs(r *report, dir string, id string) {
