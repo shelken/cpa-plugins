@@ -62,6 +62,9 @@ func (f *flexFloat) Float64() float64 {
 }
 
 type quotaAccount struct {
+	// PackageName 是上游为每个额度账本下发的包名 (如「CodeBuddy个人体验版」「赠送包」),
+	// 也是这一层唯一真实的套餐标识; 上游没有单独的档位 id 字段。
+	PackageName                string     `json:"PackageName"`
 	CycleCapacityUsedPrecise   *flexFloat `json:"CycleCapacityUsedPrecise"`
 	CycleCapacityUsed          *flexFloat `json:"CycleCapacityUsed"`
 	CycleCapacitySizePrecise   *flexFloat `json:"CycleCapacitySizePrecise"`
@@ -173,6 +176,24 @@ func handleQuotaFetch(ctx context.Context, manifest *ManifestV2, cfg *PluginConf
 	return parseQuotaResponse(bodyBytes)
 }
 
+// distinctPackageNames 按出现顺序去重, 跳过空白名。
+func distinctPackageNames(accounts []quotaAccount) []string {
+	seen := make(map[string]struct{}, len(accounts))
+	names := make([]string, 0, len(accounts))
+	for _, acc := range accounts {
+		name := strings.TrimSpace(acc.PackageName)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
 func parseQuotaResponse(bodyBytes []byte) (pluginapi.QuotaFetchResponse, error) {
 	var quotaResp quotaResponse
 	if err := json.Unmarshal(bodyBytes, &quotaResp); err != nil {
@@ -220,11 +241,14 @@ func parseQuotaResponse(bodyBytes []byte) (pluginapi.QuotaFetchResponse, error) 
 		}
 	}
 
+	// 套餐名取上游 Accounts[].PackageName: 这是上游真实下发的包名。原先写死的
+	// "WorkBuddy"/"p_tcaca" 不是档位数据 —— p_tcaca 是本插件请求时用的 ProductCode,
+	// 把它回显成 TierID 等于把请求参数当上游数据上报; 上游也没有档位 id 字段, 不编。
+	plan := strings.Join(distinctPackageNames(accounts), " + ")
+
 	return pluginapi.QuotaFetchResponse{
 		Subscription: &pluginapi.QuotaSubscription{
-			Plan:     "WorkBuddy",
-			TierName: "p_tcaca",
-			TierID:   "p_tcaca",
+			Plan: plan,
 		},
 		Groups: []pluginapi.QuotaGroup{
 			{
