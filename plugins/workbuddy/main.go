@@ -316,7 +316,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			SchemaVersion: pluginabi.SchemaVersion,
 			Metadata: pluginapi.Metadata{
 				Name:             "WorkBuddy",
-				Version:          "0.2.5",
+				Version:          "0.2.6",
 				Author:           "shelken",
 				GitHubRepository: "https://github.com/shelken/cpa-plugins",
 				ConfigFields: []pluginapi.ConfigField{
