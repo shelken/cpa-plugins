@@ -1,71 +1,17 @@
 package main
 
 import (
-	"strings"
-
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-var tier1ExcludedExact = map[string]struct{}{
-	"hunyuan-3b":       {},
-	"hunyuan-7b-dense": {},
-	"auto":             {},
-	"default":          {},
-	"default-1.1":      {},
-	"default-1.2":      {},
-}
-
-var tier1ExcludedPrefixes = []string{
-	"hunyuan-image-",
-	"codewise-",
-	"completion-gf",
-}
-
-var tier2ExcludedExact = map[string]struct{}{
-	"balanced-model": {},
-	"deep-model":     {},
-	"fast-model":     {},
-}
-
-var tier2ExcludedPrefixes = []string{
-	"deepseek-v3",
-	"deepseek-r1",
-	"glm-4.6",
-	"kimi-k2-",
-	"minimax-m2.",
-}
-
-func isModelAllowed(id string) bool {
-	idLower := strings.ToLower(strings.TrimSpace(id))
-
-	if _, ok := tier1ExcludedExact[idLower]; ok {
-		return false
-	}
-	for _, p := range tier1ExcludedPrefixes {
-		if strings.HasPrefix(idLower, p) {
-			return false
-		}
-	}
-
-	if _, ok := tier2ExcludedExact[idLower]; ok {
-		return false
-	}
-	for _, p := range tier2ExcludedPrefixes {
-		if strings.HasPrefix(idLower, p) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func filterAndMapModels(cfg *PluginConfig, manifestModels []ManifestModel) []pluginapi.ModelInfo {
+// 模型可见性由生成器决定, 插件侧不重复过滤: scripts/staticctl.ts 导出清单时已按
+// PROFILE.models.excludedIds/excludedIdPrefixes 与 src/models-filter.ts 的 isPiModel
+// (balanced-model/deep-model/fast-model 三个精确 id + deepseek/glm/kimi/minimax 前缀)
+// 过滤过, 写进 data/static-config.json 的就已经是可见集合。插件没有运行时模型发现,
+// 清单是唯一来源, 本地再抄一份规则只会与生成器漂移 (实测对当前 21 条清单零命中)。
+func mapManifestModels(cfg *PluginConfig, manifestModels []ManifestModel) []pluginapi.ModelInfo {
 	models := make([]pluginapi.ModelInfo, 0, len(manifestModels))
 	for _, m := range manifestModels {
-		if !isModelAllowed(m.ID) {
-			continue
-		}
-
 		modalities := []string{"text"}
 		if m.SupportsImages {
 			modalities = append(modalities, "image")

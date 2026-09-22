@@ -75,16 +75,19 @@ func TestQuotaResponseStringFieldsRegression(t *testing.T) {
 				"Data": {
 					"Accounts": [
 						{
+							"PackageName": "CodeBuddy个人体验版",
 							"CycleCapacityUsedPrecise": "0",
 							"CycleCapacitySizePrecise": "500",
 							"CycleCapacityRemainPrecise": "500"
 						},
 						{
+							"PackageName": "CodeBuddy个人体验版",
 							"CycleCapacityUsedPrecise": "0.65",
 							"CycleCapacitySizePrecise": "100.0",
 							"CycleCapacityRemainPrecise": "499.35"
 						},
 						{
+							"PackageName": "赠送包",
 							"CycleCapacityUsedPrecise": "",
 							"CycleCapacityUsed": 0,
 							"CycleCapacitySizePrecise": "50.5"
@@ -100,8 +103,12 @@ func TestQuotaResponseStringFieldsRegression(t *testing.T) {
 		t.Fatalf("parseQuotaResponse failed on string fields: %v", err)
 	}
 
-	if resp.Subscription == nil || resp.Subscription.TierName != "p_tcaca" {
+	// 套餐名来自上游 Accounts[].PackageName, 按出现顺序去重; 上游没有档位 id, 不编造
+	if resp.Subscription == nil || resp.Subscription.Plan != "CodeBuddy个人体验版 + 赠送包" {
 		t.Errorf("unexpected subscription: %+v", resp.Subscription)
+	}
+	if resp.Subscription.TierName != "" || resp.Subscription.TierID != "" {
+		t.Errorf("档位字段应为空 (上游无此数据), 实际 %+v", resp.Subscription)
 	}
 
 	if len(resp.Groups) != 1 || len(resp.Groups[0].Buckets) != 1 {

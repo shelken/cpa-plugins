@@ -421,20 +421,25 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 	httpReq.Header = headers
 
 	go func() {
-		defer func() {
-			_ = callHostStreamClose(streamID, "")
-		}()
+		// 宿主侧 close 是幂等的 (stream_bridge.go:231 取走条目后第二次直接返回), 所以这里
+		// 不会盖掉错误原因; 但错误路径先关一次、defer 再关一次等于每次失败多发一次无用 RPC。
+		// once 守卫把「一条 stream 只关一次」写进代码: 首个原因生效, defer 只兜住正常收尾。
+		var closeOnce sync.Once
+		closeStream := func(errMsg string) {
+			closeOnce.Do(func() { _ = callHostStreamClose(streamID, errMsg) })
+		}
+		defer closeStream("")
 
 		resp, errDo := chatHTTPClient.Do(httpReq)
 		if errDo != nil {
-			_ = callHostStreamClose(streamID, errDo.Error())
+			closeStream(errDo.Error())
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			errBytes, _ := io.ReadAll(resp.Body)
-			_ = callHostStreamClose(streamID, fmt.Sprintf("upstream chat error %d: %s", resp.StatusCode, string(errBytes)))
+			closeStream(fmt.Sprintf("upstream chat error %d: %s", resp.StatusCode, string(errBytes)))
 			return
 		}
 
@@ -463,7 +468,7 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 
 			if errRead != nil {
 				if errRead != io.EOF {
-					_ = callHostStreamClose(streamID, errRead.Error())
+					closeStream(errRead.Error())
 				}
 				break
 			}
@@ -698,5 +703,3 @@ func handleCountTokens(req pluginapi.ExecutorRequest) (pluginapi.ExecutorRespons
 		Payload: []byte(out),
 	}, nil
 }
-
-var hostCallMu sync.Mutex

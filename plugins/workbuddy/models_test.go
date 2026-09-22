@@ -1,53 +1,41 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 )
 
-func TestModelFiltering(t *testing.T) {
-	cases := []struct {
-		id      string
-		allowed bool
-	}{
-		{"deepseek-v4-pro", true},
-		{"glm-5.0-turbo", true},
-		{"kimi-k2.5", true},
-		{"minimax-m3", true},
-
-		// Tier 1 blacklist
-		{"hunyuan-3b", false},
-		{"hunyuan-7b-dense", false},
-		{"auto", false},
-		{"default", false},
-		{"default-1.1", false},
-		{"default-1.2", false},
-		{"hunyuan-image-1", false},
-		{"codewise-completion", false},
-		{"completion-gf-1", false},
-
-		// Tier 2 blacklist
-		{"balanced-model", false},
-		{"deep-model", false},
-		{"fast-model", false},
-		{"deepseek-v3", false},
-		{"deepseek-v3-0324", false},
-		{"deepseek-r1", false},
-		{"deepseek-r1-0528", false},
-		{"glm-4.6", false},
-		{"glm-4.6v", false},
-		{"kimi-k2-instruct-taiji", false},
-		{"minimax-m2.5", false},
+// TestManifestModelsAllRegistered 钉住「插件侧不再有自己的模型黑名单」:
+// 清单是唯一来源 (生成时已按官方隐藏规则过滤), 映射不得丢弃任何一个 id。
+// 谁再往插件里加本地过滤规则, 这条会红。
+func TestManifestModelsAllRegistered(t *testing.T) {
+	raw, err := os.ReadFile("data/static-config.json")
+	if err != nil {
+		t.Fatalf("read static-config.json: %v", err)
+	}
+	var doc struct {
+		Models []ManifestModel `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal static-config.json: %v", err)
+	}
+	if len(doc.Models) == 0 {
+		t.Fatal("清单里没有模型, 判据失去意义")
 	}
 
-	for _, tc := range cases {
-		got := isModelAllowed(tc.id)
-		if got != tc.allowed {
-			t.Errorf("isModelAllowed(%q) = %v, want %v", tc.id, got, tc.allowed)
+	models := mapManifestModels(mustParseConfig(t, nil), doc.Models)
+	if len(models) != len(doc.Models) {
+		t.Fatalf("清单声明 %d 个模型, 只注册了 %d 个: 插件侧不应再过滤", len(doc.Models), len(models))
+	}
+	for i, m := range models {
+		if m.ID != registeredModelID(mustParseConfig(t, nil), doc.Models[i].ID) {
+			t.Fatalf("第 %d 个模型 id 不匹配: %s", i, m.ID)
 		}
 	}
 }
 
-func TestFilterAndMapModels(t *testing.T) {
+func TestMapManifestModels(t *testing.T) {
 	manifestModels := []ManifestModel{
 		{
 			ID:                     "deepseek-v4-pro",
@@ -62,13 +50,13 @@ func TestFilterAndMapModels(t *testing.T) {
 			DefaultReasoningEffort: "high",
 		},
 		{
-			ID: "balanced-model", // blacklisted
+			ID: "glm-5.0-turbo",
 		},
 	}
 
-	models := filterAndMapModels(mustParseConfig(t, nil), manifestModels)
-	if len(models) != 1 {
-		t.Fatalf("expected 1 model after filtering, got %d", len(models))
+	models := mapManifestModels(mustParseConfig(t, nil), manifestModels)
+	if len(models) != len(manifestModels) {
+		t.Fatalf("expected %d models, got %d", len(manifestModels), len(models))
 	}
 
 	m := models[0]
@@ -86,9 +74,9 @@ func TestFilterAndMapModels(t *testing.T) {
 	}
 }
 
-func TestFilterAndMapModelsPrefixDisabled(t *testing.T) {
+func TestMapManifestModelsPrefixDisabled(t *testing.T) {
 	yamlData := []byte("enable-model-prefix: false\n")
-	models := filterAndMapModels(mustParseConfig(t, yamlData), []ManifestModel{{ID: "deepseek-v4-pro"}})
+	models := mapManifestModels(mustParseConfig(t, yamlData), []ManifestModel{{ID: "deepseek-v4-pro"}})
 	if len(models) != 1 {
 		t.Fatalf("expected 1 model, got %d", len(models))
 	}
