@@ -14,3 +14,4 @@
 - [012 · 交接清单覆盖了待办排序与进度可见性](./012-handoff-todos-vs-self-inserted-work.md)
 - [013 · 插件凭据被宿主元数据合并回写旧值且永不进刷新调度](./013-plugin-credential-metadata-overwrite-and-refresh-gap.md)
 - [014 · 修复叙事与测试路径写进了用户 README](./014-fix-narration-leaked-into-readme.md)
+- [015 · 对话固定 503 与 body.business 身份缺失](./015-chat-503-missing-business-identity.md)
