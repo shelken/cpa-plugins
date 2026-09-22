@@ -1,6 +1,6 @@
 # Echo Probe
 
-CLIProxyAPI 的轻量级健康与分发验证探针插件
+CLIProxyAPI 的轻量级健康与分发验证探针插件。
 
 ## 功能
 
