@@ -428,7 +428,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		models := filterAndMapModels(getConfig(), m.Models)
+		models := mapManifestModels(getConfig(), m.Models)
 		return okEnvelope(pluginapi.ModelResponse{
 			Provider: "workbuddy",
 			Models:   models,
