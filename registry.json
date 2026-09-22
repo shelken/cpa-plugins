@@ -76,7 +76,7 @@
       "name": "QwenWork CN",
       "description": "QwenWork (Aliyun) Cosy Provider Plugin for CLIProxyAPI",
       "author": "shelken",
-      "version": "0.1.4",
+      "version": "0.1.3",
       "repository": "https://github.com/shelken/cpa-plugins",
       "homepage": "https://github.com/shelken/cpa-plugins",
       "license": "MIT",
@@ -93,21 +93,21 @@
             "goos": "darwin",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.4/qwenworkcn_0.1.4_darwin_arm64.zip"
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.3/qwenworkcn_0.1.3_darwin_arm64.zip"
           },
           {
             "goarch": "amd64",
             "goos": "linux",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.4/qwenworkcn_0.1.4_linux_amd64.zip"
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.3/qwenworkcn_0.1.3_linux_amd64.zip"
           },
           {
             "goarch": "arm64",
             "goos": "linux",
             "sha256": "",
             "size": 0,
-            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.4/qwenworkcn_0.1.4_linux_arm64.zip"
+            "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.3/qwenworkcn_0.1.3_linux_arm64.zip"
           }
         ],
         "type": "direct"
