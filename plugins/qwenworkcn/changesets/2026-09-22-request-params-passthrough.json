@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "透传客户端 tool_choice 与 parallel_tool_calls, 并去掉无法上行的采样参数字段"}
