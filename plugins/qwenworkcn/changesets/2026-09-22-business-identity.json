@@ -1,0 +1,1 @@
+{"bump": "patch", "note": "对话请求体补 business.product/type, 修复上游固定 503 Model catalog unavailable"}
