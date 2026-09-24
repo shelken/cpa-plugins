@@ -13,14 +13,14 @@ bun scripts/staticctl.ts
 # 只更新模型清单
 bun scripts/staticctl.ts --models
 
-# 官方客户端升级后重新采集, 唯一能更新版本字段的路径
+# 官方客户端升级后重新采集并更新清单
 bun scripts/staticctl.ts --chat
 
 # 只读校验清单新鲜度与版本漂移, 不写文件
 bun scripts/staticctl.ts --check
 ```
 
-`--chat` 会自建代理并冷启动 WorkBuddy，在 App 内发一条对话后关闭，回到仓库再跑一次无参数命令完成同步。清单默认写进 `~/Code/active/cpa-plugins`，用 `CPA_PLUGINS_DIR` 指向其他检出
+`--chat` 自建代理并冷启动 WorkBuddy，在 App 内发一条对话后关闭；本次会话同步协议、模型和清单。清单默认写进 `{active-dir}/cpa-plugins`，用 `CPA_PLUGINS_DIR` 指向其他检出
 
 ## qwenworkcn
 

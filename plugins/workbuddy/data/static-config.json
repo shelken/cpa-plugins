@@ -1,15 +1,15 @@
 {
   "schemaVersion": 2,
   "provenance": {
-    "captureSession": "workbuddy_20260916_071218.json",
-    "captureUserAgent": "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0",
-    "captureClientVersion": "5.3.14",
-    "generatedAt": "2026-09-16T01:54:43.031Z",
-    "generator": "scripts/export-static.ts",
+    "captureSession": "workbuddy_20260924_190947.json",
+    "captureUserAgent": "WorkBuddy/5.6.2 WorkBuddy/5.6.2 CLI/2.147.0",
+    "captureClientVersion": "5.6.2",
+    "generatedAt": "2026-09-24T11:25:00.947Z",
+    "generator": "scripts/staticctl.ts",
     "modelsSource": "capture"
   },
   "endpoints": {
-    "baseUrl": "https://copilot.tencent.com",
+    "baseUrl": "https://www.workbuddy.cn",
     "chatCompletions": "/v2/chat/completions",
     "authState": "/v2/plugin/auth/state",
     "authToken": "/v2/plugin/auth/token",
@@ -44,7 +44,7 @@
           "Content-Type": "application/json",
           "User-Agent": "WorkBuddy/{{appVersion}} WorkBuddy/{{appVersion}} CLI/{{cliVersion}}",
           "X-Product": "SaaS",
-          "X-Domain": "copilot.tencent.com"
+          "X-Domain": "www.workbuddy.cn"
         },
         "account": {
           "Accept": "application/json",
@@ -300,7 +300,7 @@
       "displayName": "GLM-5.3-Flash",
       "ownedBy": "workbuddy",
       "contextLength": 1000000,
-      "maxCompletionTokens": 32000,
+      "maxCompletionTokens": 131072,
       "supportsImages": true,
       "supportsReasoning": true,
       "onlyReasoning": true,
@@ -356,6 +356,38 @@
     },
     {
       "id": "hy3",
+      "name": "Hy3",
+      "displayName": "Hy3",
+      "ownedBy": "workbuddy",
+      "contextLength": 192000,
+      "maxCompletionTokens": 64000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "low",
+        "high"
+      ],
+      "defaultReasoningEffort": "high"
+    },
+    {
+      "id": "hy3-b",
+      "name": "Hy3",
+      "displayName": "Hy3",
+      "ownedBy": "workbuddy",
+      "contextLength": 192000,
+      "maxCompletionTokens": 64000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "low",
+        "high"
+      ],
+      "defaultReasoningEffort": "high"
+    },
+    {
+      "id": "hy3-c",
       "name": "Hy3",
       "displayName": "Hy3",
       "ownedBy": "workbuddy",
