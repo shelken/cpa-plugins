@@ -23,7 +23,7 @@
 ## 2. 发版：一条命令
 
 ```bash
-git pull origin main
+git pull --ff-only origin main
 go run scripts/release.go publish --plugin <id>              # 发
 go run scripts/release.go publish --plugin <id> --dry-run    # 先看会发生什么（不写文件、不推送）
 ```
@@ -60,7 +60,7 @@ go run scripts/release.go pack --plugin <id> --out dist
 
 标签触发构建发布后，工作流的 `record` 作业自己下载产物、跑 `release.go record`，再把 `plugin.json` 与 `registry.json` 的改动提交回 `main`。哈希只能由真实上传的产物得出，本地 `pack` 的产物不能用来回填。
 
-CI 绿后 `git pull origin main`，确认 `registry.json` 中该插件版本与哈希已就位：
+CI 绿后 `git pull --ff-only origin main`，确认 `registry.json` 中该插件版本与哈希已就位：
 
 ```bash
 jq '.plugins[] | select(.id=="<id>") | .version, .install.artifacts[0].sha256' registry.json
@@ -89,6 +89,8 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 
 判据是 `version` 等于新标签的版本号，且声明过 `ConfigFields` 的插件 `config_fields` 非空。两者缺一，说明宿主仍跑旧产物。
 
+若宿主由 GitOps 管理，先确认 Flux 跟踪的分支，再更新该分支的插件版本；有其他未提交修改时使用独立 worktree。不要仅改未被 Flux 跟踪的本地分支
+
 ## 7. 卡住了怎么办
 
 | 现象 | 处理 |
@@ -97,6 +99,8 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 | `publish` 提交成功但 push 失败 | 直接重跑 `publish`：它检测到本地领先，会补推提交与标签 |
 | 标签推错、要重发同一版本 | 见第 5 节的删标签重推 |
 | `record` 作业失败 | 在同一提交上重打标签触发全新流水线，禁止本地代填哈希 |
+| `publish` 长时间无输出或超时 | 先查 `git status --short`、`git tag -l '<id>/v*'` 和最新提交，确认是否已消费变更集或创建标签；不要盲目重复。仍未写入版本时，分别运行 `go run scripts/check-plugins.go`、`git fetch origin main` 缩小阻塞位置，再运行可重复的 `publish` |
+| 宿主仓库的提交钩子提示工具不存在 | 若该仓库使用 mise，在仓库内通过 `mise exec -- pre-commit run` 检查已暂存文件，并在同一 mise 环境提交；不要跳过钩子 |
 
 ## 底层子命令
 
