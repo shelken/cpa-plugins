@@ -169,6 +169,11 @@ func handleAuthRefresh(ctx context.Context, manifest *ManifestV2, cfg *PluginCon
 		return pluginapi.AuthRefreshResponse{}, fmt.Errorf("create refreshed auth data: %w", err)
 	}
 
+	// 动态模型清单随凭据刷新顺带更新 (小时级天然节流, 失败等下一轮):
+	// 宿主把刷新后的凭据写回 auth 文件时, watcher 会重拉模型注册,
+	// 届时内存清单已是最新, 新模型由此生效。
+	applyLiveModels(ctx, manifest, profile, cred)
+
 	return pluginapi.AuthRefreshResponse{
 		Auth:             newAuthData,
 		NextRefreshAfter: cred.NextRefreshAfter(),
@@ -346,6 +351,10 @@ func handleAuthLoginPoll(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 	if err != nil {
 		return pluginapi.AuthLoginPollResponse{}, fmt.Errorf("create auth data after login: %w", err)
 	}
+
+	// 登录成功即刻同步拉一次动态模型清单: 宿主保存新 auth 文件并触发模型
+	// 重注册时, 内存里已是完整清单, 避免"新账号看到旧静态模型"的窗口期。
+	applyLiveModels(ctx, manifest, profile, &cred)
 
 	return pluginapi.AuthLoginPollResponse{
 		Status:  pluginapi.AuthLoginStatusSuccess,

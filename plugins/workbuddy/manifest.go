@@ -79,6 +79,7 @@ type ManifestModel struct {
 	CanDisableThinking     *bool    `json:"canDisableThinking,omitempty"`
 	SupportedEfforts       []string `json:"supportedEfforts"`
 	DefaultReasoningEffort string   `json:"defaultReasoningEffort"`
+	Credits                string   `json:"credits,omitempty"`
 }
 
 func parseManifest(data []byte) (*ManifestV2, error) {

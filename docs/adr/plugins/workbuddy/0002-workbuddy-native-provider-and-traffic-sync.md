@@ -4,7 +4,7 @@
 
 ## Status
 
-accepted（每日签到的丢弃范围已由 [ADR-0009](./0009-manual-checkin-management-page.md) 局部取代：管理页手动签到能力已加回，其余边界不变）
+accepted（每日签到的丢弃范围已由 [ADR-0009](./0009-manual-checkin-management-page.md) 局部取代：管理页手动签到能力已加回，其余边界不变；动态模型发现已由 [ADR-0010](./0010-workbuddy-live-model-list.md) 局部取代：executor 侧事件驱动拉取 `/v3/config` 加显式黑名单，与被否决的 per-auth `model.for_auth` 不同路，静态清单降级为兜底）
 
 ## Considered Options
 
