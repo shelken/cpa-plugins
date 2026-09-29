@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // 宿主按 pluginabi.Envelope 解码插件响应, 断言 resource 注册形状能被正确消费。

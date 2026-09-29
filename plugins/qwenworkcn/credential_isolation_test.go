@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // upstreamCall 是 mock 上游记下的一次请求: 只留「哪份凭据的令牌到了上游」所需字段。

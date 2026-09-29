@@ -46,7 +46,7 @@ func (r *report) note(format string, args ...any) {
 }
 
 var (
-	reSDKVersion  = regexp.MustCompile(`github\.com/router-for-me/CLIProxyAPI/v7\s+v([0-9][^\s]*)`)
+	reSDKVersion  = regexp.MustCompile(`github\.com/router-for-me/CLIProxyAPI/v[0-9]+\s+v([0-9][^\s]*)`)
 	reGoDirective = regexp.MustCompile(`(?m)^go\s+([0-9][^\s]*)`)
 	reSHA256      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	reMatrixOS    = regexp.MustCompile(`^\s*-\s*goos:\s*"?([A-Za-z0-9_]+)"?\s*$`)
@@ -61,8 +61,12 @@ func main() {
 
 	r := &report{}
 
-	if *changesetsBase != "" {
-		checkChangesets(r, *changesetsBase)
+	base := *changesetsBase
+	if base == "" {
+		base = detectDefaultChangesetsBase()
+	}
+	if base != "" {
+		checkChangesets(r, base)
 	}
 	pluginDirs := discoverPluginDirs(r)
 	matrix := readWorkflowMatrix(r)
@@ -343,11 +347,15 @@ func checkChangesets(r *report, baseRef string) {
 		r.fail("解析 ref %q 的差异失败: %s", baseRef, strings.TrimSpace(string(output)))
 		return
 	}
+	rawLines := strings.Split(string(output), "\n")
+	if cachedOut, err := exec.Command("git", "diff", "--cached", "--name-status").Output(); err == nil && len(cachedOut) > 0 {
+		rawLines = append(rawLines, strings.Split(string(cachedOut), "\n")...)
+	}
 
 	touchedChangeset := map[string]bool{}
 	codeChanges := map[string]bool{}
 
-	for _, line := range strings.Split(string(output), "\n") {
+	for _, line := range rawLines {
 		fields := strings.Split(strings.TrimSpace(line), "\t")
 		if len(fields) < 2 {
 			continue
@@ -425,4 +433,13 @@ func manifestVersionAt(ref, id string) string {
 		return ""
 	}
 	return strings.TrimSpace(doc.Version)
+}
+
+func detectDefaultChangesetsBase() string {
+	for _, ref := range []string{"origin/main", "main"} {
+		if _, err := exec.Command("git", "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output(); err == nil {
+			return ref
+		}
+	}
+	return ""
 }

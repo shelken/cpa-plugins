@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // 静态清单即唯一模型来源, 无需按 id 过滤 (workbuddy 的 tier 排除表针对动态发现,

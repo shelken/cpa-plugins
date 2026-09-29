@@ -1,0 +1,29 @@
+default_stages:
+  - pre-commit
+
+repos:
+  - repo: local
+    hooks:
+      - id: check-merge-conflicts
+        name: check-merge-conflicts
+        entry: check-merge-conflict
+        language: system
+        types: [text]
+
+      - id: end-of-file-fixer
+        name: end-of-file-fixer
+        entry: end-of-file-fixer
+        language: system
+        types: [text]
+
+      - id: trim-trailing-whitespace
+        name: trim-trailing-whitespace
+        entry: trailing-whitespace-fixer
+        language: system
+        types: [text]
+
+      - id: check-plugins
+        name: check-plugins
+        entry: go run scripts/check-plugins.go --strict
+        language: system
+        pass_filenames: false
