@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -122,7 +123,8 @@ var excludeModelReasons = map[string]string{
 }
 
 // v3ConfigResponse 是 GET /v3/config 的响应形状 (2026-09-24 抓包)。
-// agents[name=cli].models 是 CLI 客户端实际引用的子集; models 是全量详情。
+// Agents (agents[].name/models) 记录各 agent 引用的模型子集, 当前黑名单
+// 方案不使用它, 保留以记录上游形状; models 是全量详情。
 type v3ConfigResponse struct {
 	Code int    `json:"code"`
 	Msg  string `json:"msg"`
@@ -189,13 +191,14 @@ func parseModelsConfig(body []byte) ([]ManifestModel, error) {
 	return out, nil
 }
 
-// parseCredits 归一上游积分倍率: "x0.00" / "x0.18 credits" / 0 → "x0.00" 形态。
-// null 或读不出的值返回空串, 既不标免费也不显示, 与 magpie wbFreeCredits
-// 同一保守语义: 读不出的倍率不当作免费。
+// parseCredits 归一上游积分倍率: "x0.00" / "x0.18 credits" / "x0.18 CREDITS" / 0
+// → "x0.00" 形态。null 或读不出的值返回空串, 既不标免费也不显示,
+// 与 magpie wbFreeCredits 同一保守语义: 读不出的倍率不当作免费。
 func parseCredits(raw json.RawMessage) string {
 	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
-	s = strings.TrimSuffix(strings.TrimSpace(s), "credits")
-	s = strings.TrimPrefix(strings.TrimSpace(strings.ToLower(s)), "x")
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimSuffix(s, "credits")
+	s = strings.TrimPrefix(strings.TrimSpace(s), "x")
 	if s == "" || s == "null" {
 		return ""
 	}
@@ -278,6 +281,11 @@ func fetchModelsConfig(ctx context.Context, manifest *ManifestV2, profile *Profi
 	return body, nil
 }
 
+// modelsConfigTimeout 是单次 /v3/config 拉取的独立上界: 触发点在凭据刷新的
+// 同步路径里, 宿主传来的 ctx 是 Background 无法取消, 不加界时上游挂住会把
+// 刷新响应拖到 httpClient.Timeout=45s, 连带推迟其余凭据的轮转。
+const modelsConfigTimeout = 10 * time.Second
+
 // applyLiveModels 拉取动态模型清单并存入独立的 liveModels 状态。
 // 不替换 cachedManifest: 宿主在 auth 文件变化时会调用插件 Reconfigure,
 // 后者会丢弃静态 manifest 缓存, 若动态清单挂在它身上, 每次凭据落盘
@@ -287,6 +295,8 @@ func fetchModelsConfig(ctx context.Context, manifest *ManifestV2, profile *Profi
 // 失败只记日志: 请求路径与静态清单不受影响, 下一轮凭据刷新 (小时级)
 // 自然重试, 无需退避计时器。
 func applyLiveModels(ctx context.Context, manifest *ManifestV2, profile *ProfileConfig, cred *Credential) bool {
+	ctx, cancel := context.WithTimeout(ctx, modelsConfigTimeout)
+	defer cancel()
 	body, err := fetchModelsConfig(ctx, manifest, profile, cred)
 	if err != nil {
 		log.Printf("[workbuddy] dynamic model list unavailable: %v", err)

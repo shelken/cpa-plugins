@@ -214,6 +214,25 @@ func TestDisambiguateNamesFallback(t *testing.T) {
 	}
 }
 
+// parseCredits 的输入形态以真实上游为准, 变体 (大小写/数字/本地格式) 不得分流。
+func TestParseCreditsVariants(t *testing.T) {
+	cases := map[string]string{
+		`"x0.00"`:          "x0.00",
+		`"x0.18"`:          "x0.18",
+		`"x0.18 credits"`:  "x0.18",
+		`"x0.18 CREDITS"`:  "x0.18",
+		`0`:                "x0.00",
+		`0.21`:             "x0.21",
+		`null`:             "",
+		`"unknown"`:        "",
+	}
+	for raw, want := range cases {
+		if got := parseCredits(json.RawMessage(raw)); got != want {
+			t.Errorf("parseCredits(%s) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 // currentModels: 动态清单优先, 未拉取时静态兜底; Reconfigure 丢弃静态缓存
 // 不得影响已拉取的动态清单 (宿主凭据落盘会触发 Reconfigure, 实测踩过)。
 func TestCurrentModelsPrefersLive(t *testing.T) {
