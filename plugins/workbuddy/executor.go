@@ -190,10 +190,10 @@ func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *Man
 	return finalMessages
 }
 
-func findModelConfig(manifest *ManifestV2, modelID string) *ManifestModel {
-	for i := range manifest.Models {
-		if strings.EqualFold(manifest.Models[i].ID, modelID) {
-			return &manifest.Models[i]
+func findModelConfig(models []ManifestModel, modelID string) *ManifestModel {
+	for i := range models {
+		if strings.EqualFold(models[i].ID, modelID) {
+			return &models[i]
 		}
 	}
 	return nil
@@ -207,7 +207,7 @@ func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *Mani
 
 	// 宿主看到的是带前缀的注册 id, 上游只认裸 id, 这里在协议保真的边界上剥掉。
 	modelID := manifestModelID(cfg, inReq.Model)
-	modelDef := findModelConfig(manifest, modelID)
+	modelDef := findModelConfig(currentModels(manifest), modelID)
 	supportsImages := true
 	supportsReasoning := true
 	defaultEffort := "high"

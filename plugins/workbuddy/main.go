@@ -120,6 +120,9 @@ var (
 	pluginStateMu  sync.RWMutex
 	currentConfig  *PluginConfig
 	cachedManifest *ManifestV2
+	// liveModels 是 /v3/config 拉取的动态模型清单, nil 表示尚未拉取。
+	// 与 cachedManifest 生命周期分离: Reconfigure 丢弃静态缓存时不影响它。
+	liveModels []ManifestModel
 )
 
 func main() {}
@@ -428,7 +431,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		models := mapManifestModels(getConfig(), m.Models)
+		models := mapManifestModels(getConfig(), currentModels(m))
 		return okEnvelope(pluginapi.ModelResponse{
 			Provider: "workbuddy",
 			Models:   models,
