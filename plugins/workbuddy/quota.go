@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // 形状照抄 data/static-config.json requestBodies.userResource 抓包 (客户端 5.3.14, generatedAt 2026-09-13)。

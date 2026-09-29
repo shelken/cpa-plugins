@@ -39,7 +39,7 @@ import (
 	"time"
 )
 
-var reGoModSDK = regexp.MustCompile(`github\.com/router-for-me/CLIProxyAPI/v7\s+v([0-9][^\s]*)`)
+var reGoModSDK = regexp.MustCompile(`github\.com/router-for-me/CLIProxyAPI/v[0-9]+\s+v([0-9][^\s]*)`)
 
 // check 是断言的注册单位: 每个断言对单个插件各跑一次, 返回失败即终止。
 // 加断言 = 写一个 run 函数 + 注册一行, 调度不随断言数量增长。

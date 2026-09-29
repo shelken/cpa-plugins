@@ -46,7 +46,7 @@ func (r *report) note(format string, args ...any) {
 }
 
 var (
-	reSDKVersion  = regexp.MustCompile(`github\.com/router-for-me/CLIProxyAPI/v7\s+v([0-9][^\s]*)`)
+	reSDKVersion  = regexp.MustCompile(`github\.com/router-for-me/CLIProxyAPI/v[0-9]+\s+v([0-9][^\s]*)`)
 	reGoDirective = regexp.MustCompile(`(?m)^go\s+([0-9][^\s]*)`)
 	reSHA256      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	reMatrixOS    = regexp.MustCompile(`^\s*-\s*goos:\s*"?([A-Za-z0-9_]+)"?\s*$`)
