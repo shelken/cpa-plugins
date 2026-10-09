@@ -6,19 +6,19 @@ repos:
     hooks:
       - id: check-merge-conflicts
         name: check-merge-conflicts
-        entry: check-merge-conflict
+        entry: mise exec -- check-merge-conflict
         language: system
         types: [text]
 
       - id: end-of-file-fixer
         name: end-of-file-fixer
-        entry: end-of-file-fixer
+        entry: mise exec -- end-of-file-fixer
         language: system
         types: [text]
 
       - id: trim-trailing-whitespace
         name: trim-trailing-whitespace
-        entry: trailing-whitespace-fixer
+        entry: mise exec -- trailing-whitespace-fixer
         language: system
         types: [text]
 
