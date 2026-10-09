@@ -59,6 +59,7 @@ go run scripts/release.go
 
 ## 文档
 
+- [CODING_STANDARDS.md](CODING_STANDARDS.md)：编码与提交规范
 - [docs/README.md](docs/README.md)：文档索引
 - [docs/adr/](docs/adr/)：架构决策记录
 - [postmortems/README.md](postmortems/README.md)：历次事故复盘索引，改到相关模块前先读对应篇目
