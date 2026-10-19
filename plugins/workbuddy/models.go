@@ -104,22 +104,80 @@ func isFreeCredits(credits string) bool {
 }
 
 // excludeModelReasons 动态清单黑名单: /v3/config 详情中确定不可用于 chat 的模型。
-// 判据来自 2026-09-24 抓包 (www.workbuddy.cn): 这些模型 tags 为空且不被任何
-// agent 引用。任何剔除都必须写进本表并带理由, 未列出的上游模型一律暴露。
+// 判据来自 2026-10-19 抓包 (客户端 5.8.3): 这些模型或带有明确的非 chat 能力标记
+// (视频生成 / 无上下文窗口 / 不支持工具调用), 或是同一模型在其他云厂商的渠道副本。
+// 任何剔除都必须写进本表并带理由, 未列出的上游模型一律暴露。
+//
+// 与 pi-codebuddy-provider 的 scripts/static/model-kind.ts 保持同一判据;
+// 那里管静态产物的生成, 这里管插件直连上游时的动态清单。
 var excludeModelReasons = map[string]string{
+	// IDE 补全 / 专用小模型: 无上下文窗口, 不支持工具调用
 	"codewise-completions":             "IDE 代码补全, 走补全协议",
 	"codewise-jump":                    "IDE 代码跳转",
 	"codewise-nes-a4-027-aide":         "IDE 补全变体",
 	"codewise-rewrite":                 "IDE 代码重写",
 	"completion-gf":                    "FIM 补全",
 	"deepseek-v3-0324-taco-completion": "补全变体, 且 name 与 deepseek-v3-0324 撞名",
-	"hunyuan-image-alpha":              "图像生成, 非视觉理解",
-	"hunyuan-image-alpha-edit":         "图像编辑",
-	"balanced-model":                   "档位路由别名, 非真实模型",
-	"deep-model":                       "档位路由别名, 非真实模型",
-	"fast-model":                       "档位路由别名, 非真实模型",
-	"default-1.1":                      "IDE 内部 Claude 别名",
-	"default-1.2":                      "IDE 内部 Claude 别名",
+	"hunyuan-3b":                       "紧凑型补全模型, 无上下文窗口",
+	"hunyuan-7b-dense":                 "紧凑型补全模型, 无上下文窗口",
+
+	// 媒体生成: 不是对话模型
+	"hunyuan-image-alpha":      "图像生成, 非视觉理解",
+	"hunyuan-image-alpha-edit": "图像编辑",
+	"kling-video-v3":           "视频生成",
+	"minimax-video-h3":         "视频生成",
+
+	// 档位路由与 IDE 内部别名: 不是可独立调用的模型
+	"balanced-model": "档位路由别名, 非真实模型",
+	"deep-model":     "档位路由别名, 非真实模型",
+	"fast-model":     "档位路由别名, 非真实模型",
+	"default-1.1":    "IDE 内部 Claude 别名",
+	"default-1.2":    "IDE 内部 Claude 别名",
+
+	// 旧模型: 上游未给 supportsToolCall, 无法承载 agent 工具链
+	"deepseek-r1-0528": "旧版推理模型, 无工具调用能力",
+	"deepseek-v3-0324": "旧版模型, 无工具调用能力",
+
+	// 渠道副本: 同一模型在其他云厂商的部署, 有规范入口时只保留规范 id
+	"deepseek-v3-1-lkeap":    "渠道副本 (lkeap), 存在规范入口 deepseek-v3-1",
+	"deepseek-v3-0324-lkeap": "渠道副本 (lkeap)",
+	"deepseek-r1-0528-lkeap": "渠道副本 (lkeap)",
+	"deepseek-v3-1-volc":     "渠道副本 (volc), 存在规范入口 deepseek-v3-1",
+	"deepseek-v3-2-volc":     "渠道副本 (volc)",
+	"kimi-k2-instruct-taiji": "渠道副本 (taiji)",
+}
+
+// mediaTags 出现即代表生成媒体, 不是 chat 模型。
+var mediaTags = map[string]bool{
+	"text-to-image":  true,
+	"image-to-image": true,
+	"text-to-video":  true,
+	"image-to-video": true,
+}
+
+// nonChatReason 按上游能力特征判定模型不可用于 chat, 返回空串表示可用。
+// 与 pi-codebuddy-provider 的 scripts/static/model-kind.ts 同一顺序与语义:
+// 特征优先于 id 黑名单, 这样上游新增的媒体模型无需先改表就能被拦住。
+func nonChatReason(disabled, hasVideoGeneration bool, tags []string, maxInputTokens int64, supportsToolCall *bool) string {
+	if disabled {
+		return "上游标记 disabled"
+	}
+	if hasVideoGeneration {
+		return "视频生成模型"
+	}
+	for _, tag := range tags {
+		if mediaTags[tag] {
+			return "媒体模型 (" + tag + ")"
+		}
+	}
+	if maxInputTokens == 0 {
+		return "缺 maxInputTokens, 用途未知"
+	}
+	// 上游只对支持的模型显式给 true; 旧模型字段缺失等同不支持
+	if supportsToolCall == nil || !*supportsToolCall {
+		return "不支持工具调用"
+	}
+	return ""
 }
 
 // v3ConfigResponse 是 GET /v3/config 的响应形状 (2026-09-24 抓包)。
@@ -140,7 +198,11 @@ type v3ConfigResponse struct {
 			MaxOutputTokens   int64           `json:"maxOutputTokens"`
 			SupportsImages    *bool           `json:"supportsImages"`
 			SupportsReasoning *bool           `json:"supportsReasoning"`
+			SupportsToolCall  *bool           `json:"supportsToolCall"`
 			OnlyReasoning     bool            `json:"onlyReasoning"`
+			Disabled          bool            `json:"disabled"`
+			VideoGeneration   json.RawMessage `json:"videoGeneration"`
+			Tags              []string        `json:"tags"`
 			Credits           json.RawMessage `json:"credits"`
 			Reasoning         struct {
 				SupportedEfforts   []string `json:"supportedEfforts"`
@@ -165,6 +227,10 @@ func parseModelsConfig(body []byte) ([]ManifestModel, error) {
 
 	out := make([]ManifestModel, 0, len(resp.Data.Models))
 	for _, m := range resp.Data.Models {
+		if reason := nonChatReason(m.Disabled, len(m.VideoGeneration) > 0, m.Tags, m.MaxInputTokens, m.SupportsToolCall); reason != "" {
+			log.Printf("workbuddy: 跳过非 chat 模型 %s (%s)", m.ID, reason)
+			continue
+		}
 		if _, excluded := excludeModelReasons[m.ID]; excluded {
 			continue
 		}
