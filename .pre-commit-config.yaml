@@ -22,8 +22,12 @@ repos:
         language: system
         types: [text]
 
+      # 不用 --strict: 它把 WARN 也判为失败, 但「sha256 待回填」是发布流程里的
+      # 正常中间态 —— publish 只产出地址, 哈希由 CI 的 record 作业用真实上传
+      # 产物回填。--release-ready 更严 (把待回填判为 FAIL), 同样不适用本地提交。
+      # 结构性错误 (id 不一致 / url 命名 / 平台缺失 / registry 不同步) 仍是失败。
       - id: check-plugins
         name: check-plugins
-        entry: go run scripts/check-plugins.go --strict
+        entry: go run scripts/check-plugins.go
         language: system
         pass_filenames: false

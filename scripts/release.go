@@ -348,7 +348,7 @@ func runPublish(args []string) error {
 		return fmt.Errorf("扫描变更集文件失败: %w", err)
 	}
 
-	// 变更集已被消费: 版本已 bump, 缺的是标签。只补标签, 保证重跑幂等。
+	// 变更集已被消费: 版本已 bump, 只剩提交与标签。
 	if len(changesets) == 0 {
 		manifest, err := readPluginManifest(filepath.Join("plugins", id, "plugin.json"))
 		if err != nil {
@@ -359,7 +359,25 @@ func runPublish(args []string) error {
 			return fmt.Errorf("plugin.json 缺少 version")
 		}
 		tag := fmt.Sprintf("%s/v%s", id, version)
-		if tagExists(tag) {
+
+		// 版本产物还没提交 (上一次 publish 提交失败, 或代码已 bump 未提交):
+		// 必须先补提交再打标签。否则标签会指向不含该版本的旧提交,
+		// CI 拿到的代码与 registry 声明的版本对不上。
+		staged, err := hasStagedRelease(id)
+		if err != nil {
+			return err
+		}
+		if staged {
+			fmt.Printf("检测到已 bump 但未提交的版本产物, 先补提交再打标签: %s\n", tag)
+			if *dryRun {
+				fmt.Println("将依次执行: git commit → git tag → git push(main, tag)")
+				printPublishTail(tag)
+				return nil
+			}
+			if err := gitRun("commit", "-m", fmt.Sprintf("chore(%s): 发布 %s", id, version)); err != nil {
+				return err
+			}
+		} else if tagExists(tag) {
 			fmt.Printf("标签 %s 已存在, 本次只补提交与标签的推送 (可重复执行)\n", tag)
 		} else {
 			fmt.Printf("变更集已消费 (plugin.json = %s), 补标签与推送: %s\n", version, tag)
@@ -423,7 +441,10 @@ func preflightPublish() error {
 	if branch != "main" {
 		return fmt.Errorf("发布必须在 main 上执行, 当前分支 %q", branch)
 	}
-	if dirty := gitOutput("status", "--porcelain", "--untracked-files=no"); dirty != "" {
+	// 断点续传: 上次 publish 在提交前失败时, 版本产物会留在暂存区。
+	// 这类改动必须放行, 否则重跑永远被自己的产物挡住 —— 但只放行
+	// 已暂存(staged)的那部分, 未暂存的手改仍然算脏工作区。
+	if dirty := workingTreeDirty(); dirty != "" {
 		return fmt.Errorf("工作区有未提交的已跟踪改动, 先提交或还原:\n%s", dirty)
 	}
 	if err := gitRun("fetch", "origin", "main"); err != nil {
@@ -443,9 +464,44 @@ func preflightPublish() error {
 	return fmt.Errorf("HEAD (%s) 落后或分叉于 origin/main (%s), 先 git pull origin main", shortSHA(local), shortSHA(remote))
 }
 
+// workingTreeDirty 返回未暂存或被修改但未暂存的已跟踪改动。
+// 已暂存的新版本产物 (publish 的断点) 不算脏; 同一文件若既有暂存又有
+// 未暂存改动, 仍算脏 —— 那说明有人在发布中间态上手工改过文件。
+func workingTreeDirty() string {
+	out, err := exec.Command("git", "status", "--porcelain", "--untracked-files=no").Output()
+	if err != nil {
+		return "读取 git status 失败"
+	}
+	var dirty []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// 两个状态位: 第 1 位是暂存区, 第 2 位是工作区
+		if len(line) < 2 {
+			continue
+		}
+		if line[1] != ' ' && line[1] != '?' {
+			dirty = append(dirty, line)
+		}
+	}
+	return strings.Join(dirty, "\n")
+}
+
 func isAncestor(maybeAncestor, ref string) bool {
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", maybeAncestor, ref)
 	return cmd.Run() == nil
+}
+
+// hasStagedRelease 判断插件的发布产物是否已在暂存区等待提交:
+// 暂存了 plugins/<id>/ 或 registry.json 的改动即为是。
+// 用于 publish 的断点续传 —— 上一次提交失败时, 重跑必须先补提交再打标签。
+func hasStagedRelease(id string) (bool, error) {
+	out, err := exec.Command("git", "diff", "--cached", "--name-only", "--", filepath.Join("plugins", id), "registry.json").Output()
+	if err != nil {
+		return false, fmt.Errorf("读取暂存区失败: %w", err)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 // tagAndPush 固定推送次序: 先 main 再标签, 保证 CI 收到标签时提交已在 main 上。

@@ -223,14 +223,25 @@ func checkArtifacts(r *report, id string, m manifest, matrix map[string]bool, re
 
 // checkVersionTag 要求已产出的版本有同名标签: registry 的产物地址指向该标签的 Release 资产,
 // 标签不存在时用户装不上 (2026-09-22 实测该窗口: 版本 bump 了但标签没推)。
-// external 声明(SDK 直接引用上游 Release)的插件不由本仓发产物, 跳过;
-// 变更集还没消费说明版本尚未产出, 也跳过 (否则发布过程中会被自己报出来)。
+// external 声明(SDK 直接引用上游 Release)的插件不由本仓发产物, 跳过。
+//
+// 两种「标签还没到」的合法中间态必须放行, 否则发布会被自己挡住:
+//   - 变更集还没消费: 版本尚未产出
+//   - 发布进行中: 版本已 bump 但尚未提交, 标签要等提交之后才创建
+//     (release.go 刻意先 commit 后 tag, 见其 publish 注释)
+//
+// 第二种是 2026-09 引入 pre-commit 钩子后暴露的: 钩子在 publish 的 commit 步骤
+// 重新跑本门禁, 此时变更集已被消费、标签还不存在, 条件全部不成立 —— 一个多月里
+// 每次发布都卡在这里, 没有产生任何新标签。
 func checkVersionTag(r *report, dirID, dir string, m manifest, releaseReady bool) {
 	version := strings.TrimSpace(m.Version)
 	if version == "" || len(m.Install.Artifacts) == 0 {
 		return
 	}
 	if pending, err := filepath.Glob(filepath.Join(dir, "changesets", "*.json")); err == nil && len(pending) > 0 {
+		return
+	}
+	if releaseInProgress(dirID, dir) {
 		return
 	}
 	tag := fmt.Sprintf("%s/v%s", dirID, version)
@@ -245,6 +256,28 @@ func checkVersionTag(r *report, dirID, dir string, m manifest, releaseReady bool
 		return
 	}
 	r.warn("%s", msg)
+}
+
+// releaseInProgress 判定「版本已 bump 但还没提交」这个发布中间态。
+// 判据是暂存的 plugin.json 版本与 HEAD 中不同: 只有 release.go 的 version 步骤
+// 会产生这个差异, 提交完成后差异消失。标签缺失在此状态下是预期的。
+func releaseInProgress(dirID, dir string) bool {
+	pluginPath := filepath.ToSlash(filepath.Join(dir, "plugin.json"))
+	staged, err := exec.Command("git", "show", ":"+pluginPath).Output()
+	if err != nil {
+		// 暂存区没有该文件: 不是发布中间态
+		return false
+	}
+	head, err := exec.Command("git", "show", "HEAD:"+pluginPath).Output()
+	if err != nil {
+		// HEAD 里没有: 新插件首次发布, 属于发布中间态
+		return true
+	}
+	var stagedManifest, headManifest manifest
+	if json.Unmarshal(staged, &stagedManifest) != nil || json.Unmarshal(head, &headManifest) != nil {
+		return false
+	}
+	return stagedManifest.Version != headManifest.Version
 }
 
 func checkDocs(r *report, dir string, id string) {
