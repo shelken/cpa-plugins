@@ -100,6 +100,8 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 | 标签推错、要重发同一版本 | 见第 5 节的删标签重推 |
 | `record` 作业失败 | 在同一提交上重打标签触发全新流水线，禁止本地代填哈希 |
 | `publish` 长时间无输出或超时 | 先查 `git status --short`、`git tag -l '<id>/v*'` 和最新提交，确认是否已消费变更集或创建标签；不要盲目重复。仍未写入版本时，分别运行 `go run scripts/check-plugins.go`、`git fetch origin main` 缩小阻塞位置，再运行可重复的 `publish` |
+| `publish` 卡在 `git commit`（钩子报「没有对应标签」或「未回填 sha256」） | 2026-10 已修：门禁会把「暂存区版本已 bump、标签未创建」识别为发布中间态，钩子也不再因待回填的 sha256 失败。若仍出现，先 `git pull --ff-only origin main` 拿到最新脚本；不要在发布时用 `--no-verify`，那会让后续任何提交都跳过变更集门禁 |
+| 发布中途失败，版本产物留在暂存区 | 直接重跑 `publish`：它检测到「变更集已消费 + 暂存区有版本产物」，会先补提交再打标签。同一文件既有暂存又有未暂存改动（`git status` 显示 `MM`）时仍判为脏工作区，先处理掉再重跑 |
 | 宿主仓库的提交钩子提示工具不存在 | 若该仓库使用 mise，在仓库内通过 `mise exec -- pre-commit run` 检查已暂存文件，并在同一 mise 环境提交；不要跳过钩子 |
 
 ## 底层子命令
