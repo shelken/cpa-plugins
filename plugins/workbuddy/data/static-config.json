@@ -1,12 +1,12 @@
 {
   "schemaVersion": 2,
   "provenance": {
-    "captureSession": "workbuddy_20260924_190947.json",
-    "captureUserAgent": "WorkBuddy/5.6.2 WorkBuddy/5.6.2 CLI/2.147.0",
-    "captureClientVersion": "5.6.2",
-    "generatedAt": "2026-09-24T11:25:00.947Z",
+    "captureSession": "workbuddy_20261019_221205.json",
+    "captureUserAgent": "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0",
+    "captureClientVersion": "5.8.3",
+    "generatedAt": "2026-10-19T15:31:06.294Z",
     "generator": "scripts/staticctl.ts",
-    "modelsSource": "capture"
+    "modelsSource": "online"
   },
   "endpoints": {
     "baseUrl": "https://www.workbuddy.cn",
@@ -185,6 +185,19 @@
   ],
   "models": [
     {
+      "id": "deepseek-v3-1",
+      "name": "DeepSeek-V3.1",
+      "displayName": "DeepSeek-V3.1",
+      "ownedBy": "workbuddy",
+      "contextLength": 96000,
+      "maxCompletionTokens": 32000,
+      "supportsImages": true,
+      "supportsReasoning": false,
+      "onlyReasoning": false,
+      "supportedEfforts": [],
+      "defaultReasoningEffort": ""
+    },
+    {
       "id": "deepseek-v4-flash",
       "name": "Deepseek-V4-Flash",
       "displayName": "Deepseek-V4-Flash",
@@ -227,9 +240,39 @@
       "supportsReasoning": true,
       "onlyReasoning": true,
       "supportedEfforts": [
-        "high"
+        "low",
+        "high",
+        "max"
       ],
       "defaultReasoningEffort": "high"
+    },
+    {
+      "id": "glm-4.6",
+      "name": "GLM-4.6",
+      "displayName": "GLM-4.6",
+      "ownedBy": "workbuddy",
+      "contextLength": 168000,
+      "maxCompletionTokens": 32000,
+      "supportsImages": true,
+      "supportsReasoning": false,
+      "onlyReasoning": false,
+      "supportedEfforts": [],
+      "defaultReasoningEffort": ""
+    },
+    {
+      "id": "glm-4.6v",
+      "name": "GLM-4.6V",
+      "displayName": "GLM-4.6V",
+      "ownedBy": "workbuddy",
+      "contextLength": 128000,
+      "maxCompletionTokens": 32000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "medium"
+      ],
+      "defaultReasoningEffort": "medium"
     },
     {
       "id": "glm-5.0-turbo",
@@ -371,59 +414,11 @@
       "defaultReasoningEffort": "high"
     },
     {
-      "id": "hy3-b",
-      "name": "Hy3",
-      "displayName": "Hy3",
-      "ownedBy": "workbuddy",
-      "contextLength": 192000,
-      "maxCompletionTokens": 64000,
-      "supportsImages": true,
-      "supportsReasoning": true,
-      "onlyReasoning": true,
-      "supportedEfforts": [
-        "low",
-        "high"
-      ],
-      "defaultReasoningEffort": "high"
-    },
-    {
-      "id": "hy3-c",
-      "name": "Hy3",
-      "displayName": "Hy3",
-      "ownedBy": "workbuddy",
-      "contextLength": 192000,
-      "maxCompletionTokens": 64000,
-      "supportsImages": true,
-      "supportsReasoning": true,
-      "onlyReasoning": true,
-      "supportedEfforts": [
-        "low",
-        "high"
-      ],
-      "defaultReasoningEffort": "high"
-    },
-    {
-      "id": "hy3-x",
-      "name": "Hy3",
-      "displayName": "Hy3",
-      "ownedBy": "workbuddy",
-      "contextLength": 192000,
-      "maxCompletionTokens": 64000,
-      "supportsImages": true,
-      "supportsReasoning": true,
-      "onlyReasoning": true,
-      "supportedEfforts": [
-        "low",
-        "high"
-      ],
-      "defaultReasoningEffort": "high"
-    },
-    {
       "id": "hy4-preview",
       "name": "Hy4 preview",
       "displayName": "Hy4 preview",
       "ownedBy": "workbuddy",
-      "contextLength": 1000000,
+      "contextLength": 960000,
       "maxCompletionTokens": 64000,
       "supportsImages": true,
       "supportsReasoning": true,
@@ -434,19 +429,19 @@
       "defaultReasoningEffort": "high"
     },
     {
-      "id": "hy4-preview-f",
-      "name": "Hy4 preview",
-      "displayName": "Hy4 preview",
+      "id": "kimi-k2-thinking",
+      "name": "Kimi-K2-Thinking",
+      "displayName": "Kimi-K2-Thinking",
       "ownedBy": "workbuddy",
-      "contextLength": 1000000,
-      "maxCompletionTokens": 64000,
+      "contextLength": 256000,
+      "maxCompletionTokens": 32000,
       "supportsImages": true,
       "supportsReasoning": true,
       "onlyReasoning": true,
       "supportedEfforts": [
-        "high"
+        "medium"
       ],
-      "defaultReasoningEffort": "high"
+      "defaultReasoningEffort": "medium"
     },
     {
       "id": "kimi-k2.5",
@@ -528,6 +523,51 @@
       "defaultReasoningEffort": "high"
     },
     {
+      "id": "mimo-v2.6-pro",
+      "name": "Xiaomi MiMo-V2.6-Pro",
+      "displayName": "Xiaomi MiMo-V2.6-Pro",
+      "ownedBy": "workbuddy",
+      "contextLength": 1000000,
+      "maxCompletionTokens": 128000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "high"
+      ],
+      "defaultReasoningEffort": "high"
+    },
+    {
+      "id": "minimax-m2.5",
+      "name": "MiniMax-M2.5",
+      "displayName": "MiniMax-M2.5",
+      "ownedBy": "workbuddy",
+      "contextLength": 200000,
+      "maxCompletionTokens": 48000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "medium"
+      ],
+      "defaultReasoningEffort": "medium"
+    },
+    {
+      "id": "minimax-m2.7",
+      "name": "MiniMax-M2.7",
+      "displayName": "MiniMax-M2.7",
+      "ownedBy": "workbuddy",
+      "contextLength": 200000,
+      "maxCompletionTokens": 48000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "medium"
+      ],
+      "defaultReasoningEffort": "medium"
+    },
+    {
       "id": "minimax-m3",
       "name": "MiniMax-M3",
       "displayName": "MiniMax-M3",
@@ -541,6 +581,42 @@
         "medium"
       ],
       "defaultReasoningEffort": "medium"
+    },
+    {
+      "id": "space-bunny",
+      "name": "Space-Bunny",
+      "displayName": "Space-Bunny",
+      "ownedBy": "workbuddy",
+      "contextLength": 1000000,
+      "maxCompletionTokens": 128000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultReasoningEffort": "max"
+    },
+    {
+      "id": "step-5-preview",
+      "name": "Step-5-Preview",
+      "displayName": "Step-5-Preview",
+      "ownedBy": "workbuddy",
+      "contextLength": 1000000,
+      "maxCompletionTokens": 64000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "defaultReasoningEffort": "high"
     }
   ]
 }
