@@ -82,6 +82,7 @@ func TestCredentialIsolationAcrossQuotaAndChat(t *testing.T) {
 	// 对话已改走宿主 HTTP 流回调: 把替身流接到同一个 httptest 上游,
 	// 让 host.http.do_stream/read 落到真实测试服务器, 断言才能看到请求头。
 	previousCallHost := callHost
+	t.Cleanup(func() { callHost = previousCallHost })
 	callHost = func(method string, payload any) (json.RawMessage, error) {
 		switch method {
 		case pluginabi.MethodHostHTTPDoStream:

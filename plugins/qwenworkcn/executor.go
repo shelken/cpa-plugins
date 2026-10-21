@@ -572,10 +572,16 @@ func handleExecuteStream(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.
 			return
 		}
 
+		// 宿主按 32KB 读上游, 不保证按 SSE 行分块。跨块的半行留到下一块拼接,
+		// 只对完整行做解包; 流结束时仍残留半行视为上游异常。
+		var pending []byte
 		for {
 			chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
 			if len(chunk) > 0 {
-				for _, line := range bytes.SplitAfter(chunk, []byte("\n")) {
+				pending = append(pending, chunk...)
+				lines := bytes.SplitAfter(pending, []byte("\n"))
+				pending = lines[len(lines)-1]
+				for _, line := range lines[:len(lines)-1] {
 					trimmed := strings.TrimSpace(string(line))
 					if strings.HasPrefix(trimmed, ":") || trimmed == "" {
 						continue
@@ -604,6 +610,10 @@ func handleExecuteStream(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.
 			}
 
 			if errRead != nil {
+				if len(bytes.TrimSpace(pending)) > 0 {
+					_ = callHostStreamClose(streamID, "upstream stream ended mid-line: "+errRead.Error())
+					return
+				}
 				_ = callHostStreamClose(streamID, errRead.Error())
 				return
 			}

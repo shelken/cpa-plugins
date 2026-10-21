@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -452,5 +455,110 @@ func TestUnsupportedSamplingParamsNotForwarded(t *testing.T) {
 		if _, ok := params[key]; !ok {
 			t.Fatalf("parameters 缺少 %s", key)
 		}
+	}
+}
+
+// fakeQwenHostHTTP 是宿主 HTTP 流回调替身: 按 method 分发并记录 do_stream 请求。
+type fakeQwenHostHTTP struct {
+	mu          sync.Mutex
+	doStreamReq hostHTTPRequest
+	sseChunks   []string
+	streamOpen  bool
+	readErr     error
+	doneCh      chan struct{}
+}
+
+func (f *fakeQwenHostHTTP) install(t *testing.T) {
+	t.Helper()
+	previous := callHost
+	t.Cleanup(func() { callHost = previous })
+	f.doneCh = make(chan struct{})
+	const streamID = "qwen-test-stream"
+	callHost = func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case pluginabi.MethodHostHTTPDoStream:
+			req := payload.(hostHTTPRequest)
+			f.mu.Lock()
+			f.doStreamReq = req
+			f.streamOpen = true
+			f.mu.Unlock()
+			return json.Marshal(hostHTTPStreamResponse{StatusCode: 200, StreamID: streamID})
+		case pluginabi.MethodHostHTTPStreamRead:
+			f.mu.Lock()
+			open, pending := f.streamOpen, f.sseChunks
+			f.mu.Unlock()
+			if !open {
+				return nil, fmt.Errorf("host http stream %q is not open", streamID)
+			}
+			if f.readErr != nil {
+				return json.Marshal(hostHTTPStreamReadResponse{Error: f.readErr.Error(), Done: true})
+			}
+			if len(pending) == 0 {
+				return json.Marshal(hostHTTPStreamReadResponse{Done: true})
+			}
+			head := pending[0]
+			f.mu.Lock()
+			f.sseChunks = pending[1:]
+			f.mu.Unlock()
+			return json.Marshal(hostHTTPStreamReadResponse{Payload: []byte(head)})
+		case pluginabi.MethodHostHTTPStreamClose:
+			f.mu.Lock()
+			f.streamOpen = false
+			f.mu.Unlock()
+			return json.Marshal(map[string]any{})
+		case pluginabi.MethodHostStreamClose:
+			close(f.doneCh)
+			return json.Marshal(map[string]any{})
+		case pluginabi.MethodHostStreamEmit:
+			return json.Marshal(map[string]any{})
+		default:
+			return nil, fmt.Errorf("fake host: unexpected callback %s", method)
+		}
+	}
+}
+
+func (f *fakeQwenHostHTTP) callbackID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.doStreamReq.HostCallbackID
+}
+
+func (f *fakeQwenHostHTTP) waitDone(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("流 goroutine 2 秒内未处理下游关闭回调")
+	}
+}
+
+// 跨块切断的 SSE 行必须先拼接再解包, 否则半帧 JSON 会触发 business error 关闭整条流。
+func TestExecuteStreamReassemblesSplitSSELine(t *testing.T) {
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	manifest := *m
+	cred := isolationCredential(t, "uid-split", "machine-split", "token-split")
+	storage, err := cred.ToStorageJSON()
+	if err != nil {
+		t.Fatalf("ToStorageJSON: %v", err)
+	}
+
+	frame := `data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n"
+	split1 := len(`data:`)
+	split2 := len(`data: {"choices":[{"del`)
+	fake := &fakeQwenHostHTTP{sseChunks: []string{frame[:split1], frame[split1:split2], frame[split2:]}}
+	fake.install(t)
+
+	payload := []byte(`{"model":"qwenworkcn/pro","messages":[{"role":"user","content":"hi"}]}`)
+	if _, err := handleExecuteStream(&manifest, &PluginConfig{}, pluginapi.ExecutorRequest{
+		StorageJSON: storage, Payload: payload,
+	}, "downstream-q", "callback-q"); err != nil {
+		t.Fatalf("handleExecuteStream: %v", err)
+	}
+	fake.waitDone(t)
+	if got := fake.callbackID(); got != "callback-q" {
+		t.Errorf("host.http.do_stream 应携带下游 callback id, 实际 %q", got)
 	}
 }
