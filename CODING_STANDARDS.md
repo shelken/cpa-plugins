@@ -13,6 +13,10 @@
 - 提交前检查插件 `README.md` 是否需要更新
 - provider 类插件提交前检查静态字段与模型 list 是否同步，用既有同步脚本更新，有变更向用户汇报
 
+## 验证
+
+- 插件交付前跑 `verify-cpa-plugin` skill 的沙盒装载断言; 只过 `go test` 不等于宿主能装载 (历史教训见 `postmortems/008`、`011`: 离线断言被当成端到端验收, 断言恒真打到陌生实例)
+
 ## 文档
 
 - 每个插件维护独立 `README.md`，编写前阅读 `doc-readme` skill
