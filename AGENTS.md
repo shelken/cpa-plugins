@@ -12,7 +12,7 @@
 | 查决策背景或历史故障 | `docs/adr/`、`postmortems/README.md` |
 | 连接生产 CPA 宿主或改其配置 | `CODING_STANDARDS.md` |
 | 查目录布局与脚本用法 | `README.md` |
-| 验证插件改动(交付/发版/发布门禁前) | `verify-cpa-plugin` skill |
+| 验证插件改动 | `verify-cpa-plugin` skill |
 
 ## 参考
 
