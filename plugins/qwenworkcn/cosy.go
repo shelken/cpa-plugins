@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,13 +16,96 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/idna"
 )
 
 var nowFunc = time.Now
+var hostnameFunc = os.Hostname
+
+var unsafeHostnameChars = regexp.MustCompile(`[^\x21-\x7e]+`)
+var repeatedHostnameDashes = regexp.MustCompile(`-{2,}`)
+
+func machineHostnameHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+func shortenMachineHostname(value string) string {
+	if len(value) <= 96 {
+		return value
+	}
+	prefix := strings.TrimRight(value[:87], "- \t\r\n")
+	if prefix == "" {
+		return "unknown-" + machineHostnameHash(value)
+	}
+	return prefix + "-" + machineHostnameHash(value)
+}
+
+func isHeaderSafeHostname(value string) bool {
+	if value == "" || value[0] < 0x21 || value[0] > 0x7e || value[len(value)-1] < 0x21 || value[len(value)-1] > 0x7e {
+		return false
+	}
+	for i := 1; i < len(value)-1; i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeMachineHostname(input string) string {
+	value := strings.TrimSpace(input)
+	if value == "" {
+		return ""
+	}
+	if isHeaderSafeHostname(value) {
+		return shortenMachineHostname(value)
+	}
+	domainInput := strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, value)
+	if ascii, err := idna.ToASCII(domainInput); err == nil && isHeaderSafeHostname(ascii) {
+		return shortenMachineHostname(ascii)
+	}
+	hash := machineHostnameHash(value)
+	cleaned := strings.Trim(unsafeHostnameChars.ReplaceAllString(value, "-"), "-")
+	cleaned = repeatedHostnameDashes.ReplaceAllString(cleaned, "-")
+	if cleaned == "" {
+		return "unknown-" + hash
+	}
+	return shortenMachineHostname(cleaned + "-" + hash)
+}
+
+func applyNoUMIDMachineHeaders(headers map[string]string) {
+	for name := range headers {
+		if strings.EqualFold(name, "Cosy-MachineType") || strings.EqualFold(name, "Cosy-MachineToken") {
+			delete(headers, name)
+		}
+	}
+	raw, err := hostnameFunc()
+	if err != nil {
+		return
+	}
+	host := normalizeMachineHostname(raw)
+	if host == "" {
+		return
+	}
+	for name := range headers {
+		if strings.EqualFold(name, "Cosy-MachineHostname") {
+			return
+		}
+	}
+	headers["Cosy-MachineHostname"] = host
+}
 
 const (
 	CosyB64Alphabet = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!"
@@ -475,8 +559,8 @@ func signCosyRequest(input SignInferInput) (*PreparedInferRequest, error) {
 	headers["Cosy-Date"] = cosyDate
 	headers["Cosy-Key"] = runtime.Key
 	headers["Cosy-MachineId"] = input.MachineID
-	headers["Cosy-MachineToken"] = input.DeviceToken
 	headers["Cosy-User"] = user.UID
+	applyNoUMIDMachineHeaders(headers)
 
 	base := strings.TrimRight(input.Endpoint, "/")
 	chatURL := fmt.Sprintf("%s/algo%s?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1", base, CosyChatPath)

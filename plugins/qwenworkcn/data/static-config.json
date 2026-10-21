@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "provenance": {
-    "captureUserAgent": "QwenWork/1.0.6 cosy/1.1.32",
-    "generatedAt": "2026-09-16T04:43:25.051Z",
-    "generator": "export-cpa-static.ts",
-    "modelsSource": "model-cache",
-    "modelCacheFetchedAt": "2026-09-15T23:32:39.098Z"
+    "captureUserAgent": "QwenWork/1.3.2 cosy/1.1.71",
+    "generatedAt": "2026-10-20T18:46:17.501Z",
+    "generator": "staticctl.ts",
+    "modelsSource": "model-list",
+    "modelCacheFetchedAt": "2026-10-20T18:46:17.501Z"
   },
   "endpoints": {
     "baseUrl": "https://gateway.qwenwork.cn",
@@ -20,7 +20,7 @@
   "profile": {
     "clientId": "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb",
     "redirectUri": "qwenwork-cn://",
-    "cosyVersion": "1.1.32",
+    "cosyVersion": "1.1.71",
     "headers": {
       "chat": {
         "Accept": "text/event-stream",
@@ -32,11 +32,10 @@
         "Cosy-ClientType": "6",
         "Cosy-Data-Policy": "disagree",
         "Cosy-MachineOS": "aarch64_darwin",
-        "Cosy-MachineType": "5",
         "Cosy-Scene": "qwork",
-        "Cosy-Version": "1.1.32",
+        "Cosy-Version": "1.1.71",
         "Login-Version": "v2",
-        "User-Agent": "node",
+        "User-Agent": "undici",
         "X-Model-Key": "{{modelKey}}",
         "X-Model-Source": "{{modelSource}}"
       },
@@ -50,20 +49,20 @@
         "Cosy-MachineOS": "aarch64_darwin",
         "Cosy-MachineType": "5",
         "Cosy-Scene": "qwork",
-        "Cosy-Version": "1.1.32",
+        "Cosy-Version": "1.1.71",
         "Login-Version": "v2",
-        "User-Agent": "node"
+        "User-Agent": "undici"
       },
       "openApi": {
         "Accept": "application/json",
         "Authorization": "Bearer {{deviceToken}}",
         "Content-Type": "application/json",
-        "User-Agent": "qoderwork/1.1.32"
+        "User-Agent": "qoderwork/1.1.71"
       },
       "web": {
         "Accept": "application/json",
         "Authorization": "Bearer {{deviceToken}}",
-        "User-Agent": "qoderwork/1.1.32"
+        "User-Agent": "qoderwork/1.1.71"
       },
       "login.poll": {
         "Accept": "application/json",
@@ -85,7 +84,7 @@
         "Cosy-MachineId": "{{machineId}}",
         "Cosy-MachineToken": "{{deviceToken}}",
         "Login-Version": "v2",
-        "User-Agent": "qoderwork/1.1.32"
+        "User-Agent": "qoderwork/1.1.71"
       }
     }
   },
