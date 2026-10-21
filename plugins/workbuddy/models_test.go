@@ -97,20 +97,21 @@ func TestParseModelsConfig(t *testing.T) {
     "models": [
       {"id": "auto", "name": "Auto", "maxInputTokens": 256000, "maxOutputTokens": 32000,
        "supportsImages": true, "supportsReasoning": true, "onlyReasoning": false,
+       "supportsToolCall": true,
        "credits": null,
        "reasoning": {"supportedEfforts": ["low", "high"], "canDisableThinking": true, "defaultEffort": "low"}},
       {"id": "hy3", "name": "Hy3", "maxInputTokens": 192000, "maxOutputTokens": 64000,
-       "supportsImages": true, "onlyReasoning": true, "credits": "x0.00",
+       "supportsImages": true, "onlyReasoning": true, "supportsToolCall": true, "credits": "x0.00",
        "reasoning": {"supportedEfforts": ["low", "high"], "canDisableThinking": false, "defaultEffort": "high"}},
       {"id": "hy3-x", "name": "Hy3", "maxInputTokens": 192000, "maxOutputTokens": 64000,
-       "supportsImages": true, "onlyReasoning": true, "credits": "x0.05",
+       "supportsImages": true, "onlyReasoning": true, "supportsToolCall": true, "credits": "x0.05",
        "reasoning": {"supportedEfforts": ["low", "high"], "canDisableThinking": false, "defaultEffort": "high"}},
       {"id": "hy4-preview-f", "name": "Hy4 preview", "maxInputTokens": 300000, "maxOutputTokens": 48000,
-       "supportsImages": true, "onlyReasoning": true, "credits": "x0.00",
+       "supportsImages": true, "onlyReasoning": true, "supportsToolCall": true, "credits": "x0.00",
        "reasoning": {"supportedEfforts": ["high"], "canDisableThinking": false, "defaultEffort": "high"}},
       {"id": "deepseek-v3-0324", "name": "DeepSeek-V3.2", "maxInputTokens": 96000, "maxOutputTokens": 32000,
-       "supportsImages": false, "credits": "x0.29"},
-      {"id": "visionless", "name": "Visionless", "maxInputTokens": 8000, "maxOutputTokens": 1000},
+       "supportsImages": false, "supportsToolCall": true, "credits": "x0.29"},
+      {"id": "visionless", "name": "Visionless", "maxInputTokens": 8000, "maxOutputTokens": 1000, "supportsToolCall": true},
       {"id": "codewise-completions", "name": "codewise-completions", "supportsImages": true},
       {"id": "completion-gf", "name": "completion-gf", "supportsImages": true},
       {"id": "deepseek-v3-0324-taco-completion", "name": "deepseek-v3-0324", "supportsImages": true},
@@ -134,16 +135,17 @@ func TestParseModelsConfig(t *testing.T) {
 		byID[m.ID] = m
 	}
 
-	// 12 个详情 - 6 个黑名单 = 6 个暴露; 非 cli 引用但不在黑名单的保留 (deepseek-v3-0324, visionless)
-	if len(got) != 6 {
-		t.Fatalf("期望暴露 6 个模型, 实际 %d: %v", len(got), ids(got))
+	// 12 个详情 - 7 个黑名单 = 5 个暴露; 非 cli 引用且不在黑名单的保留 (visionless)
+	// deepseek-v3-0324 自 f5b2b33 起入黑名单(旧版无工具调用), 暴露数 6 → 5
+	if len(got) != 5 {
+		t.Fatalf("期望暴露 5 个模型, 实际 %d: %v", len(got), ids(got))
 	}
-	for _, excluded := range []string{"codewise-completions", "completion-gf", "deepseek-v3-0324-taco-completion", "hunyuan-image-alpha", "fast-model", "default-1.1"} {
+	for _, excluded := range []string{"codewise-completions", "completion-gf", "deepseek-v3-0324-taco-completion", "hunyuan-image-alpha", "fast-model", "default-1.1", "deepseek-v3-0324"} {
 		if _, ok := byID[excluded]; ok {
 			t.Errorf("黑名单模型 %s 不应暴露", excluded)
 		}
 	}
-	for _, keep := range []string{"auto", "hy3", "hy3-x", "hy4-preview-f", "deepseek-v3-0324", "visionless"} {
+	for _, keep := range []string{"auto", "hy3", "hy3-x", "hy4-preview-f", "visionless"} {
 		if _, ok := byID[keep]; !ok {
 			t.Errorf("模型 %s 应暴露", keep)
 		}
@@ -152,9 +154,6 @@ func TestParseModelsConfig(t *testing.T) {
 	// supportsImages 三态: 缺失(nil) 视为 true, 显式 false 保持 false
 	if !byID["visionless"].SupportsImages {
 		t.Error("supportsImages 缺失应视为 true, 否则图片链路被静默关闭")
-	}
-	if byID["deepseek-v3-0324"].SupportsImages {
-		t.Error("supportsImages 显式 false 不应被翻成 true")
 	}
 
 	// 重名消歧: 同 name 的后续模型 DisplayName 加 id 差量后缀
