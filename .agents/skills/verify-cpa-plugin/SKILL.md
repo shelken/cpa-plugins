@@ -1,6 +1,6 @@
 ---
 name: verify-cpa-plugin
-description: 验证 cpa-plugins 仓库插件与发布产物的可用性。涵盖本地沙箱运行、生产实例管理面检查、宿主版本门禁与安装态校验
+description: 验证 cpa-plugins 仓库插件与发布产物的可用性。涵盖本地沙箱运行、发布产物安装态校验; 生产上线与线上验收由用户自己做
 ---
 
 # 验证 CPA 插件
@@ -52,6 +52,17 @@ go run scripts/dev-sandbox.go -checks list
 - 判据函数已经按插件 id 参数化 (如 `checkModels(s, pluginID)`), 新插件接入只需在 `plugins/<id>/data/static-config.json` 有静态清单, 脚本无需感知插件种类
 - 新增特性域 (如「图片输入」) 时: 先建 `features/<name>.md`, 再把它的场景/断言注册进脚本, 最后在 `features/README.md` 索引里加一行
 
+## 生产边界 (验收只在本地沙箱)
+
+**所有验收都在本地沙箱跑, 生产由用户自己来。** 本地沙箱 + `copy-auth.go` 搬入的真实凭据已经覆盖真实上游的全部对话场景, 不需要也不应该拿生产再测一遍:
+
+- 不对生产跑 `verify-chat.go`: 消耗真实额度, 还可能触发凭据冷却 (如 qwenworkcn 的 `toolchoice` 网关 400), 直接影响线上用户
+- 不推送会部署到生产的 GitOps 变更: home-ops 里改插件版本一旦推上 main, Flux 就会重载生产插件 (实测约 40 秒不可用)
+- 发版收尾停在 `verify-registry-install.go -local` 全部 PASSED; 把待升级的版本号和建议的线上验收命令交给用户, 由用户决定何时上线
+- 生产上只允许两类操作: 用户明确要求时的管理面只读查询, 以及 `copy-auth.go` 的凭据只读下载
+
+2026-10-22 曾越界: 发版后直接推了 home-ops 版本升级, 又在生产跑了对话冒烟; 用户认可了结果, 但明确了边界, 见上。
+
 ## Launch
 
 本地沙箱是主要驱动环境：自动编译动态库、生成隔离配置、启动宿主并执行装载断言
@@ -70,14 +81,14 @@ go run scripts/dev-sandbox.go -plugin workbuddy -plugin qwenworkcn -checks load,
 - 沙箱宿主不依赖凭据即可驱动 `/v1/models` 等接口, 真实对话与额度需要注入凭据 (见 features/auth.md)。沙箱目录每次启动都会重建, 凭据**必须在宿主就绪之后**注入 (启动前放进去的会被清掉, 症状是列表为空且对话 503 `auth_not_found`)
 - 无论哪种启动方式, 验收结束必须按 Cleanup 清单清理
 
-隔离性: 沙箱配置、端口、管理密钥按插件集合隔离在 `~/.cache/cpa-plugins/sandbox/<ids>/` 下, 与生产实例互不影响; 不要对生产实例做写操作驱动, 写操作只进沙箱
+隔离性: 沙箱配置、端口、管理密钥按插件集合隔离在 `~/.cache/cpa-plugins/sandbox/<ids>/` 下, 与生产实例互不影响; 驱动只对沙箱做, 生产边界见上文
 
 ## Doctor
 
 对目标实例执行单次只读探测, 回答「这个实例值得驱动吗」。任何异常先跑这个:
 
 ```bash
-# 生产实例: 密钥经 sec-run 就地取得
+# 生产实例 (仅用户要求时, 只读): 密钥经 sec-run 就地取得
 go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins | jq -c '.plugins[] | {id, registered, enabled, effective_enabled, supports_quota, config_fields}'
 
 # 本地沙箱: 管理密钥每次启动随机生成, 只能从沙箱目录读
