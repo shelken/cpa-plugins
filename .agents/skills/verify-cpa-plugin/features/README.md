@@ -6,7 +6,7 @@
 
 - 沙箱验证用 `go run scripts/dev-sandbox.go -plugin <id> -keep` 启动, 就绪判据 `[+] 沙箱验证通过`, 宿主端口 `18317`
 - 沙箱管理密钥每次启动随机生成, 统一经 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key` 读取; 生产实例密钥由 `sec-run` 就地注入, 两者不可混用
-- 生产实例默认只执行只读操作; 写操作 (PUT/PATCH/凭据注入) 只进沙箱, 且须经用户确认
+- 验收只在本地沙箱跑; 生产只在用户要求时做管理面只读查询, 不跑对话、不做写操作、不推送部署生产的 GitOps 变更, 线上验收由用户自己做 (见 SKILL.md「生产边界」)
 - 驱动前跑一次 Doctor (SKILL.md), 确认实例值得驱动: 插件 `registered` 与 `enabled` 为 `true`
 - 不驱动不是本次验证启动的实例
 

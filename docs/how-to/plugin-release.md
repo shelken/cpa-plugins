@@ -80,7 +80,7 @@ git push origin <id>/v<X.Y.Z>
 go run scripts/verify-registry-install.go <id>
 ```
 
-通过后在宿主侧把插件更新到新版本，再用管理面确认：
+通过后在宿主侧把插件更新到新版本。**生产宿主的更新与线上验收由用户执行**：agent 代为发版时，收尾停在上一步全部 PASSED，把新版本号交给用户（边界见 verify-cpa-plugin skill「生产边界」）。更新后用管理面确认：
 
 ```bash
 go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins \
