@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -768,16 +769,21 @@ func TestConcurrentResolveValuesSafe(t *testing.T) {
 	wg.Wait()
 }
 
-// 宿主 HTTP 流回调替身: 按 method 分发, 记录收到的请求供断言。
+// 宿主 HTTP 流回调替身: 按 method 分发, 记录插件发出的回调供断言。
 type fakeHostHTTP struct {
 	mu           sync.Mutex
 	doStreamReq  hostHTTPRequest
+	statusCode   int // 0 视为 200
 	sseChunks    []string
 	streamOpen   bool
 	streamClosed bool
 	readErr      error
-	// streamDoneCh 在最终下游 stream_close 回调被处理后关闭,
-	// 供测试等待流 goroutine 完全退出, 避免与 cleanup 恢复 callHost 竞争。
+	reads        int
+	emitErr      error
+	emitted      []string
+	closeErr     string
+	// streamDoneCh 在下游 stream_close 回调被处理后关闭。插件保证它是流 goroutine
+	// 的最后一个宿主回调, 测试据此等待 goroutine 退出, 避免与 cleanup 恢复 callHost 竞争。
 	streamDoneCh chan struct{}
 }
 
@@ -788,43 +794,44 @@ func (f *fakeHostHTTP) install(t *testing.T) {
 	f.streamDoneCh = make(chan struct{})
 	streamID := "test-stream-1"
 	callHost = func(method string, payload any) (json.RawMessage, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		switch method {
 		case pluginabi.MethodHostHTTPDoStream:
-			req := payload.(hostHTTPRequest)
-			f.mu.Lock()
-			f.doStreamReq = req
+			f.doStreamReq = payload.(hostHTTPRequest)
 			f.streamOpen = true
-			f.mu.Unlock()
-			return json.Marshal(hostHTTPStreamResponse{StatusCode: 200, StreamID: streamID})
+			status := f.statusCode
+			if status == 0 {
+				status = 200
+			}
+			return json.Marshal(hostHTTPStreamResponse{StatusCode: status, StreamID: streamID})
 		case pluginabi.MethodHostHTTPStreamRead:
-			f.mu.Lock()
-			open, pending := f.streamOpen, f.sseChunks
-			f.mu.Unlock()
-			if !open {
+			if !f.streamOpen {
 				return nil, fmt.Errorf("host http stream %q is not open", streamID)
+			}
+			f.reads++
+			if len(f.sseChunks) > 0 {
+				head := f.sseChunks[0]
+				f.sseChunks = f.sseChunks[1:]
+				return json.Marshal(hostHTTPStreamReadResponse{Payload: []byte(head)})
 			}
 			if f.readErr != nil {
 				return json.Marshal(hostHTTPStreamReadResponse{Error: f.readErr.Error(), Done: true})
 			}
-			if len(pending) == 0 {
-				return json.Marshal(hostHTTPStreamReadResponse{Done: true})
-			}
-			payload := pending[0]
-			f.mu.Lock()
-			f.sseChunks = pending[1:]
-			f.mu.Unlock()
-			return json.Marshal(hostHTTPStreamReadResponse{Payload: []byte(payload)})
+			return json.Marshal(hostHTTPStreamReadResponse{Done: true})
 		case pluginabi.MethodHostHTTPStreamClose:
-			f.mu.Lock()
 			f.streamClosed = true
 			f.streamOpen = false
-			f.mu.Unlock()
 			return json.Marshal(map[string]any{})
 		case pluginabi.MethodHostStreamClose:
-			// 下游流的关闭回调是流 goroutine 的最后一个动作。
+			f.closeErr = payload.(rpcStreamCloseRequest).Error
 			close(f.streamDoneCh)
 			return json.Marshal(map[string]any{})
 		case pluginabi.MethodHostStreamEmit:
+			f.emitted = append(f.emitted, string(payload.(rpcStreamEmitRequest).Payload))
+			if f.emitErr != nil {
+				return nil, f.emitErr
+			}
 			return json.Marshal(map[string]any{})
 		default:
 			return nil, fmt.Errorf("fake host: unexpected callback %s", method)
@@ -838,13 +845,71 @@ func (f *fakeHostHTTP) upstreamCallbackID() string {
 	return f.doStreamReq.HostCallbackID
 }
 
-// waitStreamDone 等待流 goroutine 处理完下游关闭回调。
+// waitStreamDone 等待流 goroutine 处理完下游关闭回调, 之后读替身字段不再有并发写。
 func (f *fakeHostHTTP) waitStreamDone(t *testing.T) {
 	t.Helper()
 	select {
 	case <-f.streamDoneCh:
 	case <-time.After(2 * time.Second):
 		t.Fatal("流 goroutine 2 秒内未处理下游关闭回调")
+	}
+}
+
+// runStream 用替身驱动一次流式执行, 等 goroutine 退出后返回。
+func runStream(t *testing.T, fake *fakeHostHTTP) {
+	t.Helper()
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	fake.install(t)
+	raw := `{"model":"workbuddy/hy3","messages":[{"role":"user","content":"hi"}]}`
+	if _, err := handleExecuteStream(manifest, mustParseConfig(t, nil), pluginapi.ExecutorRequest{
+		Payload:         []byte(raw),
+		OriginalRequest: []byte(raw),
+		StorageJSON:     []byte(`{"userId":"u","credentials":{"access":"t"}}`),
+	}, "downstream-1", "callback-1"); err != nil {
+		t.Fatalf("handleExecuteStream: %v", err)
+	}
+	fake.waitStreamDone(t)
+}
+
+// 上游最后一条帧没带换行就 EOF 时, 必须照常下发, 不能静默丢弃。
+func TestExecuteStreamFlushesFinalLineWithoutNewline(t *testing.T) {
+	fake := &fakeHostHTTP{sseChunks: []string{"data: {\"a\":1}\n\ndata: {\"b\":2}"}}
+	runStream(t, fake)
+	if want := []string{`{"a":1}`, `{"b":2}`}; !reflect.DeepEqual(fake.emitted, want) {
+		t.Errorf("emitted = %q, want %q", fake.emitted, want)
+	}
+	if fake.closeErr != "" {
+		t.Errorf("正常结束不应带错误关闭, got %q", fake.closeErr)
+	}
+}
+
+// 非 200 时上游错误体里有限流/鉴权的具体原因, 必须带进错误信息。
+func TestExecuteStreamUpstreamErrorKeepsBody(t *testing.T) {
+	fake := &fakeHostHTTP{statusCode: 429, sseChunks: []string{`{"error":"rate `, `limited"}`}}
+	runStream(t, fake)
+	if !strings.Contains(fake.closeErr, "429") || !strings.Contains(fake.closeErr, `{"error":"rate limited"}`) {
+		t.Errorf("closeErr = %q, 应含状态码与完整错误体", fake.closeErr)
+	}
+	if !fake.streamClosed {
+		t.Error("读完错误体后应关闭上游流")
+	}
+}
+
+// 下游 emit 失败说明客户端已不可达, 插件应立即停读上游, 不能继续消耗上游流。
+func TestExecuteStreamStopsReadingAfterEmitFailure(t *testing.T) {
+	fake := &fakeHostHTTP{
+		emitErr:   fmt.Errorf("downstream gone"),
+		sseChunks: []string{"data: {\"a\":1}\n\ndata: {\"b\":2}\n\n", "data: {\"c\":3}\n\n"},
+	}
+	runStream(t, fake)
+	if fake.reads != 1 || len(fake.emitted) != 1 {
+		t.Errorf("emit 失败后应立即退出: reads=%d emitted=%q", fake.reads, fake.emitted)
+	}
+	if !fake.streamClosed {
+		t.Error("emit 失败退出时应关闭上游流")
 	}
 }
 
@@ -942,29 +1007,33 @@ func TestExecuteNonStreamAggregatesViaHostStream(t *testing.T) {
 	}
 }
 
-// 测试 SSE 帧被宿主分块切断的拼接: 同一行跨三个 read, 最终内容必须完整 emit。
-func TestExecuteStreamReassemblesSplitSSELine(t *testing.T) {
+func TestExecuteNonStreamUpstreamErrorKeepsBody(t *testing.T) {
 	manifest, err := parseManifest(defaultStaticConfigBytes)
 	if err != nil {
 		t.Fatalf("解析内嵌清单失败: %v", err)
 	}
-	cfg := mustParseConfig(t, nil)
-	frame := `data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n"
-	// 两个切点: 第一切在 data: 前缀之后, 第二切在 JSON 中部。
+	fake := &fakeHostHTTP{statusCode: 401, sseChunks: []string{`{"error":"token expired"}`}}
+	fake.install(t)
+	raw := `{"model":"workbuddy/hy3","messages":[{"role":"user","content":"hi"}]}`
+	_, err = handleExecute(manifest, mustParseConfig(t, nil), pluginapi.ExecutorRequest{
+		Payload:     []byte(raw),
+		StorageJSON: []byte(`{"userId":"u","credentials":{"access":"t"}}`),
+	}, "callback-9")
+	if err == nil || !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "token expired") {
+		t.Errorf("err = %v, 应含状态码与错误体", err)
+	}
+}
+
+// 宿主按固定大小分块, 不保证按行。切点落在 data: 前缀后、JSON 中部、[DONE] 中部时,
+// 必须拼回完整行再下发, 且 [DONE] 之后的内容不再下发。
+func TestExecuteStreamReassemblesSplitSSELine(t *testing.T) {
+	frame := `data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\ndata: [DONE]\n\ndata: {\"late\":1}\n\n"
 	split1 := len(`data:`)
 	split2 := len(`data: {"choices":[{"del`)
-	fake := &fakeHostHTTP{sseChunks: []string{frame[:split1], frame[split1:split2], frame[split2:]}}
-	fake.install(t)
-
-	raw := `{"model":"workbuddy/hy3","messages":[{"role":"user","content":"hi"}]}`
-	testCred := []byte(`{"userId":"u","credentials":{"access":"t"}}`)
-	if _, err := handleExecuteStream(manifest, cfg, pluginapi.ExecutorRequest{
-		Payload:         []byte(raw),
-		OriginalRequest: []byte(raw),
-		StorageJSON:     testCred,
-	}, "downstream-1", "callback-11"); err != nil {
-		t.Fatalf("handleExecuteStream: %v", err)
+	split3 := strings.Index(frame, "[DO") + 3
+	fake := &fakeHostHTTP{sseChunks: []string{frame[:split1], frame[split1:split2], frame[split2:split3], frame[split3:]}}
+	runStream(t, fake)
+	if want := []string{`{"choices":[{"delta":{"content":"hello"}}]}`}; !reflect.DeepEqual(fake.emitted, want) {
+		t.Errorf("emitted = %q, want %q", fake.emitted, want)
 	}
-
-	fake.waitStreamDone(t)
 }

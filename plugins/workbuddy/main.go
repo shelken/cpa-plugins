@@ -313,6 +313,30 @@ func hostHTTPStreamClose(streamID string) {
 	_, _ = callHost(pluginabi.MethodHostHTTPStreamClose, map[string]string{"stream_id": streamID})
 }
 
+// hostHTTPStreamReadAll 读完宿主上游流, 供非流式聚合与非 200 错误体使用。
+func hostHTTPStreamReadAll(streamID string) ([]byte, error) {
+	var out []byte
+	for {
+		chunk, done, err := hostHTTPStreamRead(streamID)
+		out = append(out, chunk...)
+		if err != nil {
+			return out, err
+		}
+		if done {
+			return out, nil
+		}
+	}
+}
+
+// upstreamErrorMessage 读出非 200 响应体拼进错误信息: 401/429 的具体原因只在响应体里。
+func upstreamErrorMessage(status int, streamID string) string {
+	body, err := hostHTTPStreamReadAll(streamID)
+	if err != nil {
+		return fmt.Sprintf("upstream chat error %d: %s (read error body: %v)", status, body, err)
+	}
+	return fmt.Sprintf("upstream chat error %d: %s", status, body)
+}
+
 func getManifest() (*ManifestV2, error) {
 	pluginStateMu.RLock()
 	m := cachedManifest

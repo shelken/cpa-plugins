@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -419,68 +418,26 @@ func handleExecuteStream(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.
 	}
 
 	go func() {
-		// 宿主侧 close 是幂等的 (stream_bridge.go:231 取走条目后第二次直接返回), 所以这里
-		// 不会盖掉错误原因; 但错误路径先关一次、defer 再关一次等于每次失败多发一次无用 RPC。
-		// once 守卫把「一条 stream 只关一次」写进代码: 首个原因生效, defer 只兜住正常收尾。
-		var closeOnce sync.Once
-		closeStream := func(errMsg string) {
-			closeOnce.Do(func() { _ = callHostStreamClose(streamID, errMsg) })
-		}
-		defer closeStream("")
+		// 下游 close 必须是本 goroutine 的最后一个宿主回调: 上游 close 是后注册的 defer,
+		// 先于它执行; 错误原因经 closeErr 带出, 一条流只关一次。
+		var closeErr string
+		defer func() { _ = callHostStreamClose(streamID, closeErr) }()
 
 		// 上游连接挂到宿主的 operation 上: 客户端 499 或插件卸载时, 宿主级联取消,
 		// stream_read 立即报错, 这里不会无限期阻塞在响应体读取上。
 		upstreamStatus, upstreamStreamID, errDo := hostHTTPDoStream(
 			hostCallbackID, http.MethodPost, chatURL, map[string][]string(headers), bodyBytes)
 		if errDo != nil {
-			closeStream(errDo.Error())
+			closeErr = errDo.Error()
 			return
 		}
 		defer hostHTTPStreamClose(upstreamStreamID)
 
 		if upstreamStatus != http.StatusOK {
-			closeStream(fmt.Sprintf("upstream chat error %d", upstreamStatus))
+			closeErr = upstreamErrorMessage(upstreamStatus, upstreamStreamID)
 			return
 		}
-
-		// 宿主按 32KB 读上游, 不保证按 SSE 行分块。跨块的半行留到下一块拼接,
-		// 只对完整行做解析与 emit; 流结束时若仍残留半行, 视为上游异常直接报错。
-		var pending []byte
-		for {
-			chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
-			if len(chunk) > 0 {
-				pending = append(pending, chunk...)
-				lines := bytes.SplitAfter(pending, []byte("\n"))
-				pending = lines[len(lines)-1]
-				for _, line := range lines[:len(lines)-1] {
-					trimmed := strings.TrimSpace(string(line))
-					if strings.HasPrefix(trimmed, ":") || trimmed == "" {
-						continue
-					}
-					if trimmed == "data: [DONE]" {
-						done = true
-						break
-					}
-					if payload, ok := ssePayload(trimmed); ok {
-						emitErr := callHostStreamEmit(streamID, []byte(payload))
-						if emitErr != nil {
-							break
-						}
-					}
-				}
-			}
-			if errRead != nil {
-				if len(bytes.TrimSpace(pending)) > 0 {
-					closeStream("upstream stream ended mid-line: " + errRead.Error())
-					return
-				}
-				closeStream(errRead.Error())
-				return
-			}
-			if done {
-				return
-			}
-		}
+		closeErr = pumpChatSSE(upstreamStreamID, streamID)
 	}()
 
 	return map[string]any{
@@ -545,19 +502,12 @@ func handleExecute(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.Execut
 	defer hostHTTPStreamClose(upstreamStreamID)
 
 	if upstreamStatus != http.StatusOK {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("upstream chat error %d", upstreamStatus)
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("%s", upstreamErrorMessage(upstreamStatus, upstreamStreamID))
 	}
 
-	var sseLines []byte
-	for {
-		chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
-		sseLines = append(sseLines, chunk...)
-		if errRead != nil {
-			return pluginapi.ExecutorResponse{}, fmt.Errorf("read non-stream chat response: %w", errRead)
-		}
-		if done {
-			break
-		}
+	sseLines, err := hostHTTPStreamReadAll(upstreamStreamID)
+	if err != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("read non-stream chat response: %w", err)
 	}
 
 	aggregated, err := aggregateChatStream(sseLines)
@@ -568,6 +518,71 @@ func handleExecute(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.Execut
 	return pluginapi.ExecutorResponse{
 		Payload: aggregated,
 	}, nil
+}
+
+// pumpChatSSE 把上游 SSE 逐行转发给下游, 返回下游关闭原因 (空串为正常结束)。
+func pumpChatSSE(upstreamStreamID, streamID string) string {
+	// handle 返回 stop=true 时立即停读上游: 遇到 [DONE], 或 emit 失败说明下游已不可达。
+	handle := func(line []byte) (stop bool, closeErr string) {
+		trimmed := strings.TrimSpace(string(line))
+		if trimmed == "data: [DONE]" {
+			return true, ""
+		}
+		payload, ok := ssePayload(trimmed)
+		if !ok {
+			return false, ""
+		}
+		if err := callHostStreamEmit(streamID, []byte(payload)); err != nil {
+			return true, err.Error()
+		}
+		return false, ""
+	}
+
+	var lines sseLineReader
+	for {
+		chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
+		lines.write(chunk)
+		for line, ok := lines.next(); ok; line, ok = lines.next() {
+			if stop, closeErr := handle(line); stop {
+				return closeErr
+			}
+		}
+		if errRead != nil {
+			return errRead.Error()
+		}
+		if done {
+			// 上游末行可以不带换行, EOF 时按完整行处理。
+			_, closeErr := handle(lines.rest())
+			return closeErr
+		}
+	}
+}
+
+// sseLineReader 把宿主按固定大小 (32KB) 读出的分块重组为完整行。
+// scanned 记录已确认无换行的前缀, 每次只扫新到的字节, 长行不会退化成平方扫描。
+type sseLineReader struct {
+	buf     []byte
+	scanned int
+}
+
+func (r *sseLineReader) write(p []byte) { r.buf = append(r.buf, p...) }
+
+func (r *sseLineReader) next() ([]byte, bool) {
+	i := bytes.IndexByte(r.buf[r.scanned:], '\n')
+	if i < 0 {
+		r.scanned = len(r.buf)
+		return nil, false
+	}
+	end := r.scanned + i + 1
+	line := r.buf[:end]
+	r.buf, r.scanned = r.buf[end:], 0
+	return line, true
+}
+
+func (r *sseLineReader) rest() []byte {
+	tail := r.buf
+	r.buf, r.scanned = nil, 0
+	return tail
 }
 
 // 宿主会自己给每段载荷补上 SSE 的 data: 前缀, 插件交出去的必须是裸载荷,

@@ -553,74 +553,26 @@ func handleExecuteStream(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.
 	}
 
 	go func() {
-		defer func() {
-			_ = callHostStreamClose(streamID, "")
-		}()
+		// 下游 close 必须是本 goroutine 的最后一个宿主回调: 上游 close 是后注册的 defer,
+		// 先于它执行; 错误原因经 closeErr 带出, 一条流只关一次。
+		var closeErr string
+		defer func() { _ = callHostStreamClose(streamID, closeErr) }()
 
 		// 上游连接挂到宿主 operation 上: 客户端 499 或插件卸载时宿主级联取消,
 		// stream_read 立即报错退出, 不留僵尸连接。
 		upstreamStatus, upstreamStreamID, errDo := hostHTTPDoStream(
 			hostCallbackID, http.MethodPost, signed.URL, hostHeaders(signed.Headers), []byte(signed.Body))
 		if errDo != nil {
-			_ = callHostStreamClose(streamID, errDo.Error())
+			closeErr = errDo.Error()
 			return
 		}
 		defer hostHTTPStreamClose(upstreamStreamID)
 
 		if upstreamStatus != http.StatusOK {
-			_ = callHostStreamClose(streamID, fmt.Sprintf("upstream chat error %d", upstreamStatus))
+			closeErr = upstreamErrorMessage(upstreamStatus, upstreamStreamID)
 			return
 		}
-
-		// 宿主按 32KB 读上游, 不保证按 SSE 行分块。跨块的半行留到下一块拼接,
-		// 只对完整行做解包; 流结束时仍残留半行视为上游异常。
-		var pending []byte
-		for {
-			chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
-			if len(chunk) > 0 {
-				pending = append(pending, chunk...)
-				lines := bytes.SplitAfter(pending, []byte("\n"))
-				pending = lines[len(lines)-1]
-				for _, line := range lines[:len(lines)-1] {
-					trimmed := strings.TrimSpace(string(line))
-					if strings.HasPrefix(trimmed, ":") || trimmed == "" {
-						continue
-					}
-
-					if payload, ok := ssePayload(trimmed); ok {
-						res := unwrapSSEFrame(payload)
-						if res.ErrorMsg != "" {
-							_ = callHostStreamClose(streamID, res.ErrorMsg)
-							return
-						}
-						if res.IsDone {
-							_ = callHostStreamEmit(streamID, []byte("[DONE]"))
-							return
-						}
-						if res.Skip || res.RawChunk == "" {
-							continue
-						}
-
-						emitErr := callHostStreamEmit(streamID, []byte(res.RawChunk))
-						if emitErr != nil {
-							return
-						}
-					}
-				}
-			}
-
-			if errRead != nil {
-				if len(bytes.TrimSpace(pending)) > 0 {
-					_ = callHostStreamClose(streamID, "upstream stream ended mid-line: "+errRead.Error())
-					return
-				}
-				_ = callHostStreamClose(streamID, errRead.Error())
-				return
-			}
-			if done {
-				return
-			}
-		}
+		closeErr = pumpChatSSE(upstreamStreamID, streamID)
 	}()
 
 	return map[string]any{
@@ -694,19 +646,12 @@ func handleExecute(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.Execut
 	defer hostHTTPStreamClose(upstreamStreamID)
 
 	if upstreamStatus != http.StatusOK {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("upstream chat error %d", upstreamStatus)
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("%s", upstreamErrorMessage(upstreamStatus, upstreamStreamID))
 	}
 
-	var sseLines []byte
-	for {
-		chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
-		sseLines = append(sseLines, chunk...)
-		if errRead != nil {
-			return pluginapi.ExecutorResponse{}, fmt.Errorf("read non-stream chat response: %w", errRead)
-		}
-		if done {
-			break
-		}
+	sseLines, err := hostHTTPStreamReadAll(upstreamStreamID)
+	if err != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("read non-stream chat response: %w", err)
 	}
 
 	aggregated, err := aggregateChatStream(sseLines)
@@ -717,6 +662,79 @@ func handleExecute(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.Execut
 	return pluginapi.ExecutorResponse{
 		Payload: aggregated,
 	}, nil
+}
+
+// pumpChatSSE 把上游 SSE 逐行解包后转发给下游, 返回下游关闭原因 (空串为正常结束)。
+func pumpChatSSE(upstreamStreamID, streamID string) string {
+	// handle 返回 stop=true 时立即停读上游: 网关报错、[DONE], 或 emit 失败说明下游已不可达。
+	handle := func(line []byte) (stop bool, closeErr string) {
+		payload, ok := ssePayload(strings.TrimSpace(string(line)))
+		if !ok {
+			return false, ""
+		}
+		res := unwrapSSEFrame(payload)
+		switch {
+		case res.ErrorMsg != "":
+			return true, res.ErrorMsg
+		case res.IsDone:
+			if err := callHostStreamEmit(streamID, []byte("[DONE]")); err != nil {
+				return true, err.Error()
+			}
+			return true, ""
+		case res.Skip || res.RawChunk == "":
+			return false, ""
+		}
+		if err := callHostStreamEmit(streamID, []byte(res.RawChunk)); err != nil {
+			return true, err.Error()
+		}
+		return false, ""
+	}
+
+	var lines sseLineReader
+	for {
+		chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
+		lines.write(chunk)
+		for line, ok := lines.next(); ok; line, ok = lines.next() {
+			if stop, closeErr := handle(line); stop {
+				return closeErr
+			}
+		}
+		if errRead != nil {
+			return errRead.Error()
+		}
+		if done {
+			// 上游末行可以不带换行, EOF 时按完整行处理。
+			_, closeErr := handle(lines.rest())
+			return closeErr
+		}
+	}
+}
+
+// sseLineReader 把宿主按固定大小 (32KB) 读出的分块重组为完整行。
+// scanned 记录已确认无换行的前缀, 每次只扫新到的字节, 长行不会退化成平方扫描。
+type sseLineReader struct {
+	buf     []byte
+	scanned int
+}
+
+func (r *sseLineReader) write(p []byte) { r.buf = append(r.buf, p...) }
+
+func (r *sseLineReader) next() ([]byte, bool) {
+	i := bytes.IndexByte(r.buf[r.scanned:], '\n')
+	if i < 0 {
+		r.scanned = len(r.buf)
+		return nil, false
+	}
+	end := r.scanned + i + 1
+	line := r.buf[:end]
+	r.buf, r.scanned = r.buf[end:], 0
+	return line, true
+}
+
+func (r *sseLineReader) rest() []byte {
+	tail := r.buf
+	r.buf, r.scanned = nil, 0
+	return tail
 }
 
 type chatCompletionMessage struct {
