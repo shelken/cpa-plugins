@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -452,5 +455,161 @@ func TestUnsupportedSamplingParamsNotForwarded(t *testing.T) {
 		if _, ok := params[key]; !ok {
 			t.Fatalf("parameters 缺少 %s", key)
 		}
+	}
+}
+
+// fakeQwenHostHTTP 是宿主 HTTP 流回调替身: 按 method 分发, 记录插件发出的回调供断言。
+type fakeQwenHostHTTP struct {
+	mu           sync.Mutex
+	doStreamReq  hostHTTPRequest
+	statusCode   int // 0 视为 200
+	sseChunks    []string
+	streamOpen   bool
+	streamClosed bool
+	reads        int
+	emitErr      error
+	emitted      []string
+	closeErr     string
+	// doneCh 在下游 stream_close 回调后关闭; 插件保证它是流 goroutine 的最后一个回调。
+	doneCh chan struct{}
+}
+
+func (f *fakeQwenHostHTTP) install(t *testing.T) {
+	t.Helper()
+	previous := callHost
+	t.Cleanup(func() { callHost = previous })
+	f.doneCh = make(chan struct{})
+	const streamID = "qwen-test-stream"
+	callHost = func(method string, payload any) (json.RawMessage, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch method {
+		case pluginabi.MethodHostHTTPDoStream:
+			f.doStreamReq = payload.(hostHTTPRequest)
+			f.streamOpen = true
+			status := f.statusCode
+			if status == 0 {
+				status = 200
+			}
+			return json.Marshal(hostHTTPStreamResponse{StatusCode: status, StreamID: streamID})
+		case pluginabi.MethodHostHTTPStreamRead:
+			if !f.streamOpen {
+				return nil, fmt.Errorf("host http stream %q is not open", streamID)
+			}
+			f.reads++
+			if len(f.sseChunks) == 0 {
+				return json.Marshal(hostHTTPStreamReadResponse{Done: true})
+			}
+			head := f.sseChunks[0]
+			f.sseChunks = f.sseChunks[1:]
+			return json.Marshal(hostHTTPStreamReadResponse{Payload: []byte(head)})
+		case pluginabi.MethodHostHTTPStreamClose:
+			f.streamClosed = true
+			f.streamOpen = false
+			return json.Marshal(map[string]any{})
+		case pluginabi.MethodHostStreamClose:
+			f.closeErr = payload.(rpcStreamCloseRequest).Error
+			close(f.doneCh)
+			return json.Marshal(map[string]any{})
+		case pluginabi.MethodHostStreamEmit:
+			f.emitted = append(f.emitted, string(payload.(rpcStreamEmitRequest).Payload))
+			if f.emitErr != nil {
+				return nil, f.emitErr
+			}
+			return json.Marshal(map[string]any{})
+		default:
+			return nil, fmt.Errorf("fake host: unexpected callback %s", method)
+		}
+	}
+}
+
+func qwenTestRequest(t *testing.T) (*ManifestV2, pluginapi.ExecutorRequest) {
+	t.Helper()
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	storage, err := isolationCredential(t, "uid-s", "machine-s", "token-s").ToStorageJSON()
+	if err != nil {
+		t.Fatalf("ToStorageJSON: %v", err)
+	}
+	return m, pluginapi.ExecutorRequest{
+		StorageJSON: storage,
+		Payload:     []byte(`{"model":"qwenworkcn/pro","messages":[{"role":"user","content":"hi"}]}`),
+	}
+}
+
+// runQwenStream 用替身驱动一次流式执行, 等 goroutine 发出下游 close 后返回。
+func runQwenStream(t *testing.T, fake *fakeQwenHostHTTP) {
+	t.Helper()
+	m, req := qwenTestRequest(t)
+	fake.install(t)
+	if _, err := handleExecuteStream(m, &PluginConfig{}, req, "downstream-q", "callback-q"); err != nil {
+		t.Fatalf("handleExecuteStream: %v", err)
+	}
+	select {
+	case <-fake.doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("流 goroutine 2 秒内未处理下游关闭回调")
+	}
+}
+
+const qwenHelloFrame = `data: {"body":"{\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}","statusCodeValue":200}` + "\n\n"
+
+// 宿主按固定大小分块, 不保证按行。切点落在 data: 前缀后、JSON 中部、网关 [DONE] 帧中部时,
+// 必须拼回完整行再解包, 否则半帧 JSON 会被当成业务错误关掉整条流。
+func TestExecuteStreamReassemblesSplitSSELine(t *testing.T) {
+	frame := qwenHelloFrame + `data: {"body":"[DONE]","statusCodeValue":200}` + "\n\n"
+	split1 := len(`data:`)
+	split2 := len(`data: {"body":"{\"cho`)
+	split3 := strings.Index(frame, "[DO") + 3
+	fake := &fakeQwenHostHTTP{sseChunks: []string{frame[:split1], frame[split1:split2], frame[split2:split3], frame[split3:]}}
+	runQwenStream(t, fake)
+	if want := []string{`{"choices":[{"delta":{"content":"hello"}}]}`, "[DONE]"}; !reflect.DeepEqual(fake.emitted, want) {
+		t.Errorf("emitted = %q, want %q", fake.emitted, want)
+	}
+	if fake.closeErr != "" || fake.doStreamReq.HostCallbackID != "callback-q" {
+		t.Errorf("closeErr=%q callback=%q", fake.closeErr, fake.doStreamReq.HostCallbackID)
+	}
+}
+
+// 上游最后一条帧没带换行就 EOF 时, 必须照常下发, 不能静默丢弃。
+func TestExecuteStreamFlushesFinalLineWithoutNewline(t *testing.T) {
+	fake := &fakeQwenHostHTTP{sseChunks: []string{strings.TrimRight(qwenHelloFrame, "\n")}}
+	runQwenStream(t, fake)
+	if want := []string{`{"choices":[{"delta":{"content":"hello"}}]}`}; !reflect.DeepEqual(fake.emitted, want) {
+		t.Errorf("emitted = %q, want %q", fake.emitted, want)
+	}
+}
+
+// 非 200 时上游错误体里有鉴权/限流的具体原因, 流式与非流式都必须带进错误信息。
+func TestExecuteUpstreamErrorKeepsBody(t *testing.T) {
+	fake := &fakeQwenHostHTTP{statusCode: 429, sseChunks: []string{`{"message":"rate `, `limited"}`}}
+	runQwenStream(t, fake)
+	if !strings.Contains(fake.closeErr, "429") || !strings.Contains(fake.closeErr, `{"message":"rate limited"}`) {
+		t.Errorf("stream closeErr = %q, 应含状态码与完整错误体", fake.closeErr)
+	}
+	if !fake.streamClosed {
+		t.Error("读完错误体后应关闭上游流")
+	}
+
+	m, req := qwenTestRequest(t)
+	nonStream := &fakeQwenHostHTTP{statusCode: 401, sseChunks: []string{`token expired`}}
+	nonStream.install(t)
+	_, err := handleExecute(m, &PluginConfig{}, req, "callback-n")
+	if err == nil || !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "token expired") {
+		t.Errorf("non-stream err = %v, 应含状态码与错误体", err)
+	}
+}
+
+// 下游 emit 失败说明客户端已不可达, 插件应立即停读上游, 并带着原因关闭下游。
+func TestExecuteStreamStopsReadingAfterEmitFailure(t *testing.T) {
+	fake := &fakeQwenHostHTTP{
+		emitErr:   fmt.Errorf("downstream gone"),
+		sseChunks: []string{qwenHelloFrame + qwenHelloFrame, qwenHelloFrame},
+	}
+	runQwenStream(t, fake)
+	if fake.reads != 1 || len(fake.emitted) != 1 || !fake.streamClosed {
+		t.Errorf("emit 失败后应立即退出并关上游: reads=%d emitted=%d closed=%v", fake.reads, len(fake.emitted), fake.streamClosed)
 	}
 }

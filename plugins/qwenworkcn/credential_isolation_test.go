@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -70,9 +74,53 @@ func TestCredentialIsolationAcrossQuotaAndChat(t *testing.T) {
 	}))
 	defer server.Close()
 
+	var isolationStreamBody []byte
 	oldClient := httpClient
 	httpClient = server.Client()
 	defer func() { httpClient = oldClient }()
+
+	// 对话已改走宿主 HTTP 流回调: 把替身流接到同一个 httptest 上游,
+	// 让 host.http.do_stream/read 落到真实测试服务器, 断言才能看到请求头。
+	previousCallHost := callHost
+	t.Cleanup(func() { callHost = previousCallHost })
+	callHost = func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case pluginabi.MethodHostHTTPDoStream:
+			req := payload.(hostHTTPRequest)
+			req.URL = strings.Replace(req.URL, "https://gateway.qwenwork.cn", server.URL, 1)
+			httpReq, err := http.NewRequest(req.Method, req.URL, bytes.NewReader(req.Body))
+			if err != nil {
+				return nil, err
+			}
+			for k, vs := range req.Headers {
+				for _, v := range vs {
+					httpReq.Header.Add(k, v)
+				}
+			}
+			resp, errDo := server.Client().Do(httpReq)
+			if errDo != nil {
+				return nil, errDo
+			}
+			body, errRead := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if errRead != nil {
+				return nil, errRead
+			}
+			isolationStreamBody = body
+			return json.Marshal(hostHTTPStreamResponse{StatusCode: resp.StatusCode, StreamID: "isolation-stream"})
+		case pluginabi.MethodHostHTTPStreamRead:
+			if isolationStreamBody == nil {
+				return json.Marshal(hostHTTPStreamReadResponse{Done: true})
+			}
+			payload := isolationStreamBody
+			isolationStreamBody = nil
+			return json.Marshal(hostHTTPStreamReadResponse{Payload: payload})
+		case pluginabi.MethodHostHTTPStreamClose:
+			return json.Marshal(map[string]any{})
+		default:
+			return previousCallHost(method, payload)
+		}
+	}
 
 	testManifest := *m
 	testManifest.Endpoints.BaseURL = server.URL
@@ -98,9 +146,9 @@ func TestCredentialIsolationAcrossQuotaAndChat(t *testing.T) {
 	}
 	chat := func(label string, storage []byte) {
 		t.Helper()
-		if _, err := handleExecute(context.Background(), &testManifest, &PluginConfig{}, pluginapi.ExecutorRequest{
+		if _, err := handleExecute(&testManifest, &PluginConfig{}, pluginapi.ExecutorRequest{
 			StorageJSON: storage, Payload: chatPayload,
-		}); err != nil {
+		}, "isolation-callback"); err != nil {
 			t.Fatalf("对话 (%s): %v", label, err)
 		}
 	}

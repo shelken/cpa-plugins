@@ -1,18 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -261,12 +257,6 @@ func deriveUUID(seed string) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
 }
 
-var chatHTTPClient = func() *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 60 * time.Second
-	return &http.Client{Transport: transport}
-}()
-
 func buildChatRequestBody(
 	cfg *PluginConfig,
 	reqPayload []byte,
@@ -497,7 +487,16 @@ func validateParsedChunk(payload string, parsed map[string]any) unwrapResult {
 	return unwrapResult{RawChunk: payload}
 }
 
-func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest, streamID string) (map[string]any, error) {
+// hostHeaders 把签名结果的单值头转成宿主回调要求的多值头形状。
+func hostHeaders(single map[string]string) map[string][]string {
+	out := make(map[string][]string, len(single))
+	for k, v := range single {
+		out[k] = []string{v}
+	}
+	return out
+}
+
+func handleExecuteStream(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest, streamID, hostCallbackID string) (map[string]any, error) {
 	cred, err := parseCredential(req.StorageJSON)
 	if err != nil {
 		return nil, fmt.Errorf("parse storage json for stream execute: %w", err)
@@ -553,69 +552,27 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 		return nil, fmt.Errorf("sign cosy request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, signed.URL, bytes.NewReader([]byte(signed.Body)))
-	if err != nil {
-		return nil, fmt.Errorf("create stream chat request: %w", err)
-	}
-	for k, v := range signed.Headers {
-		httpReq.Header.Set(k, v)
-	}
-
 	go func() {
-		defer func() {
-			_ = callHostStreamClose(streamID, "")
-		}()
+		// 下游 close 必须是本 goroutine 的最后一个宿主回调: 上游 close 是后注册的 defer,
+		// 先于它执行; 错误原因经 closeErr 带出, 一条流只关一次。
+		var closeErr string
+		defer func() { _ = callHostStreamClose(streamID, closeErr) }()
 
-		resp, errDo := chatHTTPClient.Do(httpReq)
+		// 上游连接挂到宿主 operation 上: 客户端 499 或插件卸载时宿主级联取消,
+		// stream_read 立即报错退出, 不留僵尸连接。
+		upstreamStatus, upstreamStreamID, errDo := hostHTTPDoStream(
+			hostCallbackID, http.MethodPost, signed.URL, hostHeaders(signed.Headers), []byte(signed.Body))
 		if errDo != nil {
-			_ = callHostStreamClose(streamID, errDo.Error())
+			closeErr = errDo.Error()
 			return
 		}
-		defer resp.Body.Close()
+		defer hostHTTPStreamClose(upstreamStreamID)
 
-		if resp.StatusCode != http.StatusOK {
-			errBytes, _ := io.ReadAll(resp.Body)
-			_ = callHostStreamClose(streamID, fmt.Sprintf("upstream chat error %d: %s", resp.StatusCode, string(errBytes)))
+		if upstreamStatus != http.StatusOK {
+			closeErr = upstreamErrorMessage(upstreamStatus, upstreamStreamID)
 			return
 		}
-
-		reader := bufio.NewReader(resp.Body)
-		for {
-			line, errRead := reader.ReadBytes('\n')
-			if len(line) > 0 {
-				trimmed := strings.TrimSpace(string(line))
-				if strings.HasPrefix(trimmed, ":") {
-					continue
-				}
-
-				if payload, ok := ssePayload(trimmed); ok {
-					res := unwrapSSEFrame(payload)
-					if res.ErrorMsg != "" {
-						_ = callHostStreamClose(streamID, res.ErrorMsg)
-						return
-					}
-					if res.IsDone {
-						_ = callHostStreamEmit(streamID, []byte("[DONE]"))
-						return
-					}
-					if res.Skip || res.RawChunk == "" {
-						continue
-					}
-
-					emitErr := callHostStreamEmit(streamID, []byte(res.RawChunk))
-					if emitErr != nil {
-						return
-					}
-				}
-			}
-
-			if errRead != nil {
-				if errRead != io.EOF {
-					_ = callHostStreamClose(streamID, errRead.Error())
-				}
-				return
-			}
-		}
+		closeErr = pumpChatSSE(upstreamStreamID, streamID)
 	}()
 
 	return map[string]any{
@@ -625,7 +582,7 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 	}, nil
 }
 
-func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+func handleExecute(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest, hostCallbackID string) (pluginapi.ExecutorResponse, error) {
 	cred, err := parseCredential(req.StorageJSON)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("parse storage json for execute: %w", err)
@@ -681,30 +638,23 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("sign cosy request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, signed.URL, bytes.NewReader([]byte(signed.Body)))
-	if err != nil {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("create non-stream chat request: %w", err)
+	upstreamStatus, upstreamStreamID, errDo := hostHTTPDoStream(
+		hostCallbackID, http.MethodPost, signed.URL, hostHeaders(signed.Headers), []byte(signed.Body))
+	if errDo != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("execute non-stream chat request: %w", errDo)
 	}
-	for k, v := range signed.Headers {
-		httpReq.Header.Set(k, v)
+	defer hostHTTPStreamClose(upstreamStreamID)
+
+	if upstreamStatus != http.StatusOK {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("%s", upstreamErrorMessage(upstreamStatus, upstreamStreamID))
 	}
 
-	resp, err := chatHTTPClient.Do(httpReq)
-	if err != nil {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("execute non-stream chat request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
+	sseLines, err := hostHTTPStreamReadAll(upstreamStreamID)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("read non-stream chat response: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("upstream chat error %d: %s", resp.StatusCode, string(respBytes))
-	}
-
-	aggregated, err := aggregateChatStream(respBytes)
+	aggregated, err := aggregateChatStream(sseLines)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("aggregate upstream stream: %w", err)
 	}
@@ -712,6 +662,79 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 	return pluginapi.ExecutorResponse{
 		Payload: aggregated,
 	}, nil
+}
+
+// pumpChatSSE 把上游 SSE 逐行解包后转发给下游, 返回下游关闭原因 (空串为正常结束)。
+func pumpChatSSE(upstreamStreamID, streamID string) string {
+	// handle 返回 stop=true 时立即停读上游: 网关报错、[DONE], 或 emit 失败说明下游已不可达。
+	handle := func(line []byte) (stop bool, closeErr string) {
+		payload, ok := ssePayload(strings.TrimSpace(string(line)))
+		if !ok {
+			return false, ""
+		}
+		res := unwrapSSEFrame(payload)
+		switch {
+		case res.ErrorMsg != "":
+			return true, res.ErrorMsg
+		case res.IsDone:
+			if err := callHostStreamEmit(streamID, []byte("[DONE]")); err != nil {
+				return true, err.Error()
+			}
+			return true, ""
+		case res.Skip || res.RawChunk == "":
+			return false, ""
+		}
+		if err := callHostStreamEmit(streamID, []byte(res.RawChunk)); err != nil {
+			return true, err.Error()
+		}
+		return false, ""
+	}
+
+	var lines sseLineReader
+	for {
+		chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
+		lines.write(chunk)
+		for line, ok := lines.next(); ok; line, ok = lines.next() {
+			if stop, closeErr := handle(line); stop {
+				return closeErr
+			}
+		}
+		if errRead != nil {
+			return errRead.Error()
+		}
+		if done {
+			// 上游末行可以不带换行, EOF 时按完整行处理。
+			_, closeErr := handle(lines.rest())
+			return closeErr
+		}
+	}
+}
+
+// sseLineReader 把宿主按固定大小 (32KB) 读出的分块重组为完整行。
+// scanned 记录已确认无换行的前缀, 每次只扫新到的字节, 长行不会退化成平方扫描。
+type sseLineReader struct {
+	buf     []byte
+	scanned int
+}
+
+func (r *sseLineReader) write(p []byte) { r.buf = append(r.buf, p...) }
+
+func (r *sseLineReader) next() ([]byte, bool) {
+	i := bytes.IndexByte(r.buf[r.scanned:], '\n')
+	if i < 0 {
+		r.scanned = len(r.buf)
+		return nil, false
+	}
+	end := r.scanned + i + 1
+	line := r.buf[:end]
+	r.buf, r.scanned = r.buf[end:], 0
+	return line, true
+}
+
+func (r *sseLineReader) rest() []byte {
+	tail := r.buf
+	r.buf, r.scanned = nil, 0
+	return tail
 }
 
 type chatCompletionMessage struct {
