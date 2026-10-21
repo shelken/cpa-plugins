@@ -116,7 +116,8 @@ func TestCredentialIsolationAcrossQuotaAndChat(t *testing.T) {
 		t.Fatalf("上游共收到 %d 条请求, 期望 4 条: %+v", len(calls), calls)
 	}
 
-	// 额度走 web 头组的 Bearer 令牌, 对话走 Cosy 签名头 (机器标识与令牌明文可见)
+	// 额度走 web 头组的 Bearer 令牌；对话走 Cosy 签名，使用每份凭据的 MachineId，
+	// 远程插件没有官方 UMID，因此不发送 MachineToken。
 	checkQuota := func(call upstreamCall, label, wantAuth string) {
 		t.Helper()
 		if !strings.HasSuffix(call.path, "/user/wallets") {
@@ -126,13 +127,13 @@ func TestCredentialIsolationAcrossQuotaAndChat(t *testing.T) {
 			t.Fatalf("%s 的 Authorization 不是本凭据的令牌: %q (期望 Bearer %s)", label, call.authorization, wantAuth)
 		}
 	}
-	checkChat := func(call upstreamCall, label, wantToken, wantMachine string) {
+	checkChat := func(call upstreamCall, label, wantMachine string) {
 		t.Helper()
 		if !strings.Contains(call.path, "agent_chat_generation") {
 			t.Fatalf("%s 打到了 %s, 期望对话路径", label, call.path)
 		}
-		if call.machineToken != wantToken {
-			t.Fatalf("%s 的 Cosy-MachineToken = %q, 期望 %q (串了别的凭据)", label, call.machineToken, wantToken)
+		if call.machineToken != "" {
+			t.Fatalf("%s 不应发送 Cosy-MachineToken，实际 %q", label, call.machineToken)
 		}
 		if call.machineID != wantMachine {
 			t.Fatalf("%s 的 Cosy-MachineId = %q, 期望 %q", label, call.machineID, wantMachine)
@@ -143,7 +144,7 @@ func TestCredentialIsolationAcrossQuotaAndChat(t *testing.T) {
 	}
 
 	checkQuota(calls[0], "额度 (凭据 A)", "token-a")
-	checkChat(calls[1], "对话 (凭据 B)", "token-b", "machine-b")
+	checkChat(calls[1], "对话 (凭据 B)", "machine-b")
 	checkQuota(calls[2], "额度 (凭据 B)", "token-b")
-	checkChat(calls[3], "对话 (凭据 A)", "token-a", "machine-a")
+	checkChat(calls[3], "对话 (凭据 A)", "machine-a")
 }

@@ -75,7 +75,27 @@ func TestRuntimeFromRawStable(t *testing.T) {
 	}
 }
 
+func TestNormalizeMachineHostname(t *testing.T) {
+	cases := map[string]string{
+		"abc":                    "abc",
+		"  dev-mac.local  ":      "dev-mac.local",
+		"My Mac":                 "My Mac",
+		"张三的电脑":                  "xn--ehq892buuqjgb581a",
+		"dev\nmac":               "devmac",
+		"\n":                     "",
+		strings.Repeat("a", 100): strings.Repeat("a", 87) + "-28165978",
+	}
+	for input, want := range cases {
+		if got := normalizeMachineHostname(input); got != want {
+			t.Errorf("normalizeMachineHostname(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestSignInferRequestFixed(t *testing.T) {
+	previousHostnameFunc := hostnameFunc
+	hostnameFunc = func() (string, error) { return "test-host", nil }
+	defer func() { hostnameFunc = previousHostnameFunc }()
 	plain := `{"messages":[{"role":"user","content":"yo"}]}`
 	// 金标向量只在 cosyVersion=1.1.18 下有效 (cosyVersion 进 Authorization p1 payload)。
 	// 显式固定, 不吃 manifest: 数据刷新 (版本跟随) 不应反复打断金标测试。
@@ -88,7 +108,7 @@ func TestSignInferRequestFixed(t *testing.T) {
 		"Cosy-Business-Type":    "agent",
 		"Cosy-Scene":            "qwork",
 		"Cosy-MachineOS":        "darwin",
-		"Cosy-MachineType":      "aarch64",
+		"Cosy-MachineType":      "stale-static-type",
 		"X-Model-Key":           "qmodel_latest",
 		"X-Model-Source":        "system",
 	}
@@ -126,8 +146,14 @@ func TestSignInferRequestFixed(t *testing.T) {
 		t.Fatalf("Authorization = %q\nwant = %q", gotAuth, wantAuth)
 	}
 
-	if out.Headers["Cosy-MachineToken"] != "DEVICE-TOKEN" {
-		t.Fatalf("Cosy-MachineToken = %q, want DEVICE-TOKEN", out.Headers["Cosy-MachineToken"])
+	if _, ok := out.Headers["Cosy-MachineToken"]; ok {
+		t.Fatalf("无 UMID chat 不应发送 Cosy-MachineToken")
+	}
+	if _, ok := out.Headers["Cosy-MachineType"]; ok {
+		t.Fatalf("无 UMID chat 不应发送 Cosy-MachineType")
+	}
+	if out.Headers["Cosy-MachineHostname"] != "test-host" {
+		t.Fatalf("Cosy-MachineHostname = %q, want test-host", out.Headers["Cosy-MachineHostname"])
 	}
 	if out.Headers["Cosy-MachineId"] != "mid" {
 		t.Fatalf("Cosy-MachineId = %q, want mid", out.Headers["Cosy-MachineId"])
