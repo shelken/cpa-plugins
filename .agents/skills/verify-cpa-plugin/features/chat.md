@@ -11,8 +11,9 @@
 - `chat-memory` 多轮里模型复现前文事实
 - `chat-effort` 客户端 `reasoning_effort` 真实改变上游思考深度
 - `chat-tools` 工具定义透传, 模型返回 `tool_calls` 并消费工具结果
-- `chat-tool-choice` 客户端 `tool_choice` 与 `parallel_tool_calls` 原样上行
+- `chat-tool-choice` 客户端 `tool_choice` 与 `parallel_tool_calls` 的约束到达上游 (各插件现状见下方 Gotchas: workbuddy 桌面档按协议不发, qwenworkcn 点名函数被网关拒)
 - `chat-model` 只接受宿主报送过的模型 id
+- `chat-cancel` 客户端断开后, 插件经宿主取消链中止上游请求, 不留僵尸连接 (无脚本判据, 见 Driving it)
 
 ## 场景与请求成本
 
@@ -24,7 +25,7 @@
 | `probe` | 重复请求缓存(二次)、用量上报 | 改了缓存相关字段、请求幂等性 |
 | `nonstream` | 非流式链路 | 改了流式聚合、`stream:false` 路径 |
 | `tools` | 工具调用 流式/非流式、工具结果消费 | 改了工具字段透传、分片拼接 |
-| `toolchoice` | 点名函数、`tool_choice=none`、`parallel_tool_calls=false` | 改了 `tool_choice` 或 `parallel_tool_calls` 的上行构造 |
+| `toolchoice` | 点名函数、`tool_choice=none`、`parallel_tool_calls=false` | 改了 `tool_choice` 或 `parallel_tool_calls` 的上行构造。已知现状 (2026-10-22, 修复前后一致): workbuddy 桌面档 `none` 必 FAIL; qwenworkcn 点名函数被网关 400 并触发凭据冷却, 同次运行的后续请求全部 503 |
 | `effort` | 思维链输出、思考深度传递 | 改了推理档位映射、`reasoning_effort` 传递 |
 | `guard` | 未知模型拒绝 | 改了模型注册、路由或清单装载 |
 
@@ -52,7 +53,7 @@
 | 工具调用 流式 | 带 `tools` 与 `tool_choice:auto` 的请求返回 `finish_reason:"tool_calls"`, 每个调用带非空 `id` 与函数名, `arguments` 是合法 JSON |
 | 工具调用 非流式 | 同一请求走聚合路径后仍带 `tool_calls` 与合法 `arguments` |
 | 工具结果消费 | 把首轮 `tool_calls` 与工具结果带回下一轮, 模型正文引用了工具返回的事实 |
-| 点名函数 | `tool_choice` 用对象形态点名 `get_weather` 时, 返回的 `tool_calls` 恰为该函数且 `finish_reason` 为 `tool_calls`; 返回别的函数或直接答正文即 FAIL (客户端约束被丢弃) |
+| 点名函数 | `tool_choice` 用对象形态点名 `get_weather` 时, 返回的 `tool_calls` 恰为 1 个且为该函数 (脚本只打印 `finish_reason`, 不判它); 返回别的函数或直接答正文即 FAIL (客户端约束被丢弃) |
 | `tool_choice=none` | 同请求带 `tool_choice:"none"` 时不得返回 `tool_calls`, 且要有正文或推理输出; 返回调用即 FAIL |
 | `parallel_tool_calls=false` | 显式给出该字段的请求被上游接受 (HTTP 2xx), 且返回的调用数不超过 1 |
 | 未知模型拒绝 | 未报送的模型 id 在路由阶段被拒 (400 `model_not_found`); 同沙箱内合法模型会走到凭据阶段 (无凭据时 503 `auth_not_found`), 说明二者处理阶段不同 |
@@ -88,9 +89,12 @@ Preconditions:
   go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> \
     -manifest plugins/<id>/data/static-config.json -scenarios all
   ```
+  qwenworkcn 跑 `all` 时 `toolchoice` 排在 `effort` 前 (按注册顺序执行, 改书写顺序无效), 其网关 400 会让凭据冷却约一分钟, `effort` 随之全部 503。先单独跑除 `toolchoice` 外的场景, 冷却结束后再单独跑 `toolchoice`; 冷却期的 503 不算 `effort` 失败
   `-manifest` 可省略, 默认按 `-model` 的插件段推导为 `plugins/<plugin>/data/static-config.json`
 
 - **工具调用是独立场景。** 无需手工发请求, 首轮带 `get_weather` 定义断言 `finish_reason:"tool_calls"` 与合法 `arguments`, 次轮带回调用与结果断言模型引用了结果; 只在点名 `-scenarios tools` 时执行
+
+- **下游取消链 (`chat-cancel`)。** 没有脚本判据。插件侧由单测钉住: `cd plugins/<id> && go test -race .` 中的 `TestExecuteStreamDownstreamCancelAbortsUpstreamRead` (宿主 `stream_read` 报错后插件退出并关闭上游流) 与 `TestExecuteStreamForwardsHostCallbackID` (上游请求携带下游 `host_callback_id`, 宿主据此级联取消)。真机只能做对照观察: 修复前后两个沙箱各发一次流式长输出请求, 300ms 内 (首字节前) 断开, 用 `nettop -P -p <宿主 pid> -s 1 -J bytes_in -x` 看断开后宿主是否还在收这次请求的上游响应, 并对照宿主日志排除后台模型刷新; 结论只作人工判断, 不作通过判据
 
 - **跑构造层单测。** 不依赖上游凭据, 改动请求构造后先跑 (这是零成本, 不需要选场景):
   ```bash
@@ -115,7 +119,11 @@ Preconditions:
 - 冷却不是永久故障 -> 凭据不可用后有 `next_retry_after`, 约一分钟自愈, 重启宿主立即清除; 冷却期失败不能当功能失败
 - 缓存看命中数不看总 token -> 命中数为 0 说明公共前缀没被复用, 先检查 `-prefix` 段落数
 - 会话级 id 必须整轮不变 -> 会话头每请求新生成会让上游把每轮当新会话, 前缀缓存命中率随请求序列抖动; 只有消息 id 与 trace id 该每次新
-- 流式缺 `[DONE]` 或缺 `usage` -> 先怀疑响应体被中途掐断: 插件侧挂整体超时会让长思考流读一半断连, 尾部帧连 `usage` 一起消失; `verify-chat.go` 会区分「读取中断」与「缺终止帧」
+- 流式缺 `[DONE]` 或缺 `usage` -> 插件已不挂本地对话超时 (上游连接由宿主 HTTP 流回调管理, 宿主客户端无整体超时), 先排查验收客户端自身的 `-timeout` (默认 180s)、客户端提前断开、上游中断; `verify-chat.go` 会区分「读取中断」与「缺终止帧」
+- workbuddy `tool_choice=none` 仍返回 `tool_calls` -> 默认桌面档按官方桌面协议 (docs/adr/plugins/workbuddy/0003) 在上行前删掉 `tool_choice` 与 `parallel_tool_calls` (`plugins/workbuddy/data/static-config.json` 桌面档的删除字段), CLI 档则固定为 `auto`/`true`; 两档都不传客户端约束, 这是插件配置决定的已知缺口, 不是上游忽略了约束
+- qwenworkcn 点名函数返回 `upstream gateway error HTTP 400: {"code":"400","message":"Error in upstream response"}` -> 插件把客户端对象原样放进 Cosy `parameters.tool_choice`, 网关在 200 流里回了错误帧; 普通工具调用可用不代表点名约束可用, 是否需要另一种编码尚无协议证据。外层 HTTP 200 不能证明对话成功, 错误藏在流内帧里
+- 验证下游取消链别在上游出数据时断开 -> 上游持续出数据时, 下一次 emit 失败就会让插件停读, 取消链断了也看不出来; 只有在上游首字节前断开, 插件才完全依赖宿主取消解除阻塞 (生产 `bytes_sent: 0` 卡几十秒到几分钟的形态)
+- 判取消链别数 TCP 连接 -> 上游走 HTTP/2 时取消只发 RST_STREAM, 连接留在池里; 也别把真实上游的进程入站字节写成阈值判据: 同一版本两次运行的断开后入站量相差两个数量级, workbuddy 还会随凭据刷新重拉 live 模型列表 (沙箱实测约每分钟一次 `live model list applied`, 几十 KB~MB 入站)。2026-10-22 的对照实测见 `~/.cache/cpa-plugins/evidence/workbuddy/verify-20261022-cancel-summary.md`
 - `403 code 11140 request illegal` -> 该形态曾因账号不可用产生 (postmortems/003), 未用可用账号复现前不要据此改字段
 - 桌面档与 CLI 档头部不同 -> 两者不可混用, 默认取桌面档
 - 日志边界 -> 见 `docs/adr/plugins/workbuddy/0002`, 只记方法、路径、状态码、耗时与模型名, 不记请求体与回复正文
