@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -37,6 +34,9 @@ type chatMessage struct {
 	ToolCalls        []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 	StopReason       string     `json:"stop_reason,omitempty"`
+	// Extra 承载官方客户端的 user 消息簿记(agent/startsNewUserRequest/conversationRequestId),
+	// 字段名由 static-config 的 body.userMessageFields 声明, 序列化时合并进顶层。
+	Extra map[string]any `json:"-"`
 }
 
 type chatCompletionRequest struct {
@@ -199,6 +199,31 @@ func findModelConfig(models []ManifestModel, modelID string) *ManifestModel {
 	return nil
 }
 
+// messagesToJSON 把消息序列化为上游 JSON; chatMessage.Extra 的键值合并进消息顶层。
+func messagesToJSON(messages []chatMessage) []any {
+	out := make([]any, len(messages))
+	for i, msg := range messages {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			// 结构体序列化不会失败(字段全是可 JSON 类型); 保底原样跳过 Extra
+			out[i] = msg
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal(data, &m) != nil || m == nil {
+			out[i] = msg
+			continue
+		}
+		for k, v := range msg.Extra {
+			if _, exists := m[k]; !exists {
+				m[k] = v
+			}
+		}
+		out[i] = m
+	}
+	return out
+}
+
 func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *ManifestV2, profile *ProfileConfig, isStream bool) ([]byte, error) {
 	var inReq chatCompletionRequest
 	if err := json.Unmarshal(reqPayload, &inReq); err != nil {
@@ -221,9 +246,24 @@ func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *Mani
 
 	inReq.Messages = cleanMessages(inReq.Messages, supportsImages, manifest)
 
+	// 官方 user 消息簿记注入: 字段与取值由配置声明(body.userMessageFields),
+	// 占位符引用 values 注册表。此处只执行注入, 不携带任何字段知识。
+	if len(profile.Body.UserMessageFields) > 0 {
+		vars := manifestTemplateVars(manifest)
+		cred := &Credential{}
+		// 注入只用到会话级派生值(不含凭据字段), 空凭据即安全; 引用凭据类占位符时会报错拦截。
+		values, err := resolveValues(manifest.Values, "", cred, vars)
+		if err != nil {
+			return nil, fmt.Errorf("resolve user field values: %w", err)
+		}
+		if err := injectUserMessageFields(inReq.Messages, profile.Body.UserMessageFields, values); err != nil {
+			return nil, err
+		}
+	}
+
 	outMap := make(map[string]any)
 	outMap["model"] = modelID
-	outMap["messages"] = inReq.Messages
+	outMap["messages"] = messagesToJSON(inReq.Messages)
 	outMap["stream"] = isStream
 	if isStream {
 		outMap["stream_options"] = map[string]any{
@@ -286,10 +326,6 @@ var chatHTTPClient = func() *http.Client {
 	return &http.Client{Transport: transport}
 }()
 
-func traceID() string {
-	return strings.ReplaceAll(uuid.NewString(), "-", "")
-}
-
 // 宿主在鉴权选择阶段算好的规范会话 id 的元数据键, 定义见
 // sdk/cliproxy/executor.CanonicalSessionIDMetadataKey。
 const canonicalSessionIDKey = "canonical_session_id"
@@ -333,52 +369,19 @@ func sessionSeed(req pluginapi.ExecutorRequest, payload []byte) string {
 	return sb.String()
 }
 
-// 把种子派生成客户端要求的两种取值形态: 带横线的 UUID 与 32 位无横线十六进制。
-func deriveUUID(seed string) string {
-	sum := sha256.Sum256([]byte(seed))
-	raw := [16]byte{}
-	copy(raw[:], sum[:16])
-	raw[6] = (raw[6] & 0x0f) | 0x40
-	raw[8] = (raw[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
-}
-
-func deriveHex32(seed string) string {
-	sum := sha256.Sum256([]byte(seed))
-	return hex.EncodeToString(sum[:16])
-}
-
-func buildChatHeaders(profile *ProfileConfig, cred *Credential, seed string) http.Header {
-	headers := make(http.Header)
-
-	for k, v := range profile.Headers["chat"] {
-		headers.Set(k, v)
+// buildChatHeaders 按配置头组渲染 chat 请求头。
+// 身份头的名字与取值全部来自 manifest(profiles.<档>.headers.chat + values 注册表),
+// 本函数只负责求值与渲染; 取值语义见 identity.go。
+func buildChatHeaders(manifest *ManifestV2, profile *ProfileConfig, cred *Credential, seed string) (http.Header, error) {
+	values, err := resolveValues(manifest.Values, seed, cred, manifestTemplateVars(manifest))
+	if err != nil {
+		return nil, err
 	}
-
-	// 取值形态照抄桌面客户端: 消息 id 与请求 id 相同, 会话请求 id 与根请求 id 相同,
-	// 这三类 id 为 32 位无横线十六进制; 会话 id 与连接 id 为带横线的 UUID。
-	// 客户端在对话接口上不发送 X-Session-ID, 故不设置。
-	// 会话 id 与会话请求 id 整轮不变, 只有消息 id 与 trace id 每次新。
-	messageID := traceID()
-	conversationRequestID := deriveHex32("conversation-request\x00" + seed)
-
-	headers.Set("Authorization", "Bearer "+cred.AccessToken())
-	headers.Set("X-User-Id", cred.UserID)
-	headers.Set("X-Conversation-ID", deriveUUID("conversation\x00"+seed))
-	headers.Set("X-Conversation-Request-ID", conversationRequestID)
-	headers.Set("X-Root-Request-ID", conversationRequestID)
-	headers.Set("X-Conversation-Message-ID", messageID)
-	headers.Set("X-Request-ID", messageID)
-	headers.Set("X-Trace-Id", traceID())
-	headers.Set("Acp-Connection-Id", uuid.NewString())
-	headers.Set("X-Codebuddy-Request", "1")
-	headers.Set("X-Requested-With", "XMLHttpRequest")
-	headers.Set("Accept", "application/json")
-	if headers.Get("Content-Type") == "" {
-		headers.Set("Content-Type", "application/json")
+	group := profile.Headers["chat"]
+	if len(group) == 0 {
+		return nil, fmt.Errorf("profile %q headers.chat is empty", "chat")
 	}
-
-	return headers
+	return renderHeaders(group, values)
 }
 
 func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest, streamID string) (map[string]any, error) {
@@ -417,7 +420,10 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 		return nil, fmt.Errorf("create stream chat request: %w", err)
 	}
 
-	headers := buildChatHeaders(profile, cred, sessionSeed(req, seedPayload))
+	headers, err := buildChatHeaders(manifest, profile, cred, sessionSeed(req, seedPayload))
+	if err != nil {
+		return nil, fmt.Errorf("build stream chat headers: %w", err)
+	}
 	httpReq.Header = headers
 
 	go func() {
@@ -520,7 +526,11 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("create non-stream chat request: %w", err)
 	}
 
-	httpReq.Header = buildChatHeaders(profile, cred, sessionSeed(req, seedPayload))
+	headers, err := buildChatHeaders(manifest, profile, cred, sessionSeed(req, seedPayload))
+	if err != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("build chat headers: %w", err)
+	}
+	httpReq.Header = headers
 
 	resp, err := chatHTTPClient.Do(httpReq)
 	if err != nil {

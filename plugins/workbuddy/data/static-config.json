@@ -1,10 +1,10 @@
 {
   "schemaVersion": 2,
   "provenance": {
-    "captureSession": "workbuddy_20261019_221205.json",
+    "captureSession": "workbuddy_20261021_211706.json",
     "captureUserAgent": "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0",
     "captureClientVersion": "5.8.3",
-    "generatedAt": "2026-10-19T15:31:06.294Z",
+    "generatedAt": "2026-10-21T14:06:38.814Z",
     "generator": "scripts/staticctl.ts",
     "modelsSource": "online"
   },
@@ -31,13 +31,24 @@
           "Content-Type": "application/json",
           "User-Agent": "WorkBuddy/{{appVersion}} WorkBuddy/{{appVersion}} CLI/{{cliVersion}}",
           "X-Agent-Intent": "craft",
+          "X-Agent-Type": "main",
           "X-Agent-Purpose": "conversation",
           "X-IDE-Name": "WorkBuddy",
           "X-IDE-Type": "WorkBuddy",
           "X-IDE-Version": "{{appVersion}}",
           "X-Private-Data": "true",
           "X-Product": "SaaS",
-          "X-Domain": "www.workbuddy.cn"
+          "X-Domain": "www.workbuddy.cn",
+          "X-User-Id": "{{userId}}",
+          "Authorization": "Bearer {{accessToken}}",
+          "X-Conversation-ID": "{{conversationId}}",
+          "X-Conversation-Request-ID": "{{conversationRequestId}}",
+          "X-Conversation-Message-ID": "{{messageId}}",
+          "X-Request-ID": "{{messageId}}",
+          "X-Trace-ID": "{{traceId}}",
+          "Acp-Connection-Id": "{{acpConnectionId}}",
+          "X-Codebuddy-Request": "1",
+          "X-Requested-With": "XMLHttpRequest"
         },
         "auth": {
           "Accept": "application/json",
@@ -69,7 +80,12 @@
           "verbosity": "high",
           "reasoning_summary": "auto"
         },
-        "extraVars": true
+        "extraVars": true,
+        "userMessageFields": {
+          "agent": "cli",
+          "startsNewUserRequest": true,
+          "conversationRequestId": "{{conversationRequestId}}"
+        }
       }
     },
     "cli": {
@@ -82,12 +98,23 @@
           "Content-Type": "application/json; charset=utf-8",
           "User-Agent": "CLI/{{cliVersion}}",
           "X-Agent-Intent": "craft",
+          "X-Agent-Type": "main",
           "X-IDE-Name": "CLI",
           "X-IDE-Type": "CLI",
           "X-IDE-Version": "{{cliVersion}}",
           "X-Private-Data": "false",
           "X-Product": "",
-          "X-Domain": "copilot.tencent.com"
+          "X-Domain": "copilot.tencent.com",
+          "X-User-Id": "{{userId}}",
+          "Authorization": "Bearer {{accessToken}}",
+          "X-Conversation-ID": "{{conversationId}}",
+          "X-Conversation-Request-ID": "{{conversationRequestId}}",
+          "X-Conversation-Message-ID": "{{messageId}}",
+          "X-Request-ID": "{{messageId}}",
+          "X-Trace-ID": "{{traceId}}",
+          "Acp-Connection-Id": "{{acpConnectionId}}",
+          "X-Codebuddy-Request": "1",
+          "X-Requested-With": "XMLHttpRequest"
         },
         "auth": {
           "Accept": "application/json",
@@ -111,55 +138,10 @@
           "parallel_tool_calls": true,
           "reasoning_summary": "auto"
         },
-        "extraVars": false
+        "extraVars": false,
+        "userMessageFields": {}
       }
     }
-  },
-  "identityHeaders": {
-    "chat": [
-      "X-Conversation-ID",
-      "X-Conversation-Message-ID",
-      "X-Conversation-Request-ID",
-      "X-Root-Request-ID",
-      "X-Request-ID",
-      "X-User-Id",
-      "Authorization"
-    ],
-    "authState": [
-      "X-Request-ID",
-      "X-No-Authorization",
-      "X-No-User-Id",
-      "X-No-Enterprise-Id",
-      "X-No-Department-Info"
-    ],
-    "authPoll": [
-      "X-Request-ID",
-      "X-No-Authorization",
-      "X-No-User-Id",
-      "X-No-Enterprise-Id",
-      "X-No-Department-Info"
-    ],
-    "tokenRefresh": [
-      "Authorization",
-      "X-Refresh-Token",
-      "X-Auth-Refresh-Source",
-      "X-Request-ID",
-      "X-User-Id"
-    ],
-    "accounts": [
-      "Authorization",
-      "X-Request-ID",
-      "X-User-Id"
-    ],
-    "userResource": [
-      "Authorization",
-      "X-Request-ID",
-      "X-User-Id"
-    ],
-    "dailyCheckin": [
-      "Authorization",
-      "X-User-Id"
-    ]
   },
   "requestBodies": {
     "userResource": {
@@ -583,6 +565,25 @@
       "defaultReasoningEffort": "medium"
     },
     {
+      "id": "minimax-m3.1-flash",
+      "name": "MiniMax-M3.1-Flash",
+      "displayName": "MiniMax-M3.1-Flash",
+      "ownedBy": "workbuddy",
+      "contextLength": 1000000,
+      "maxCompletionTokens": 128000,
+      "supportsImages": true,
+      "supportsReasoning": true,
+      "onlyReasoning": true,
+      "supportedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultReasoningEffort": "max"
+    },
+    {
       "id": "space-bunny",
       "name": "Space-Bunny",
       "displayName": "Space-Bunny",
@@ -618,5 +619,47 @@
       ],
       "defaultReasoningEffort": "high"
     }
-  ]
+  ],
+  "values": {
+    "appVersion": {
+      "from": "manifest",
+      "manifestKey": "appVersion"
+    },
+    "cliVersion": {
+      "from": "manifest",
+      "manifestKey": "cliVersion"
+    },
+    "userId": {
+      "from": "credential"
+    },
+    "accessToken": {
+      "from": "credentialToken"
+    },
+    "conversationId": {
+      "derive": "uuid",
+      "salt": "conversation\u0000",
+      "scope": "session"
+    },
+    "conversationRequestId": {
+      "derive": "hex32",
+      "salt": "conversation-request\u0000",
+      "scope": "session"
+    },
+    "messageId": {
+      "derive": "hex32",
+      "scope": "request"
+    },
+    "traceId": {
+      "derive": "hex32",
+      "scope": "request"
+    },
+    "acpConnectionId": {
+      "derive": "uuid",
+      "scope": "request"
+    },
+    "requestId": {
+      "derive": "hex32",
+      "scope": "request"
+    }
+  }
 }

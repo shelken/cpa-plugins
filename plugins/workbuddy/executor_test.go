@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"testing"
@@ -100,20 +101,29 @@ func TestCleanMessages(t *testing.T) {
 }
 
 func TestBuildChatHeadersMatchDesktopClient(t *testing.T) {
-	profile := ProfileConfig{
-		Headers: map[string]map[string]string{
-			"chat": {"X-Agent-Purpose": "conversation", "X-Product": "SaaS"},
-		},
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile, err := manifest.GetProfile(string(ProfileDesktop))
+	if err != nil {
+		t.Fatalf("取 desktop 档失败: %v", err)
 	}
 	cred := &Credential{UserID: "user-1", Credentials: TokenCredentials{Access: "token-1"}}
 
-	headers := buildChatHeaders(&profile, cred, "session-1")
+	headers, err := buildChatHeaders(manifest, profile, cred, "session-1")
+	if err != nil {
+		t.Fatalf("渲染 chat 头失败: %v", err)
+	}
 
 	if got := headers.Get("Authorization"); got != "Bearer token-1" {
 		t.Errorf("authorization = %q, want Bearer token-1", got)
 	}
 	if got := headers.Get("X-Agent-Purpose"); got != "conversation" {
 		t.Errorf("清单头部未透传, X-Agent-Purpose = %q", got)
+	}
+	if got := headers.Get("X-Agent-Type"); got != "main" {
+		t.Errorf("X-Agent-Type = %q, want main (官方主对话必发)", got)
 	}
 	if got := headers.Get("X-Session-ID"); got != "" {
 		t.Errorf("桌面客户端在对话接口上不发送 X-Session-ID, 实际 %q", got)
@@ -125,16 +135,13 @@ func TestBuildChatHeadersMatchDesktopClient(t *testing.T) {
 		t.Errorf("X-Requested-With = %q, want XMLHttpRequest", got)
 	}
 
-	// 请求 id 与消息 id 相同, 会话请求 id 与根请求 id 相同
+	// 请求 id 与消息 id 同值由引擎两阶段渲染保证
 	if msgID, reqID := headers.Get("X-Conversation-Message-ID"), headers.Get("X-Request-ID"); msgID == "" || msgID != reqID {
 		t.Errorf("消息 id 应与请求 id 相同, 实际 %q / %q", msgID, reqID)
 	}
-	if convReqID, rootID := headers.Get("X-Conversation-Request-ID"), headers.Get("X-Root-Request-ID"); convReqID == "" || convReqID != rootID {
-		t.Errorf("会话请求 id 应与根请求 id 相同, 实际 %q / %q", convReqID, rootID)
-	}
 
-	// 三类追踪 id 为 32 位无横线十六进制; 会话 id 与连接 id 为带横线 UUID
-	for _, name := range []string{"X-Conversation-Message-ID", "X-Request-ID", "X-Conversation-Request-ID", "X-Root-Request-ID", "X-Trace-Id"} {
+	// 会话请求/追踪 id 为 32 位无横线十六进制; 会话 id 与连接 id 为带横线 UUID
+	for _, name := range []string{"X-Conversation-Message-ID", "X-Request-ID", "X-Conversation-Request-ID", "X-Trace-ID"} {
 		if !reHex32.MatchString(headers.Get(name)) {
 			t.Errorf("%s 应为 32 位十六进制, 实际 %q", name, headers.Get(name))
 		}
@@ -144,15 +151,35 @@ func TestBuildChatHeadersMatchDesktopClient(t *testing.T) {
 			t.Errorf("%s 应为带横线 UUID, 实际 %q", name, headers.Get(name))
 		}
 	}
+	// 官方 10-21 抓包已不再发送 X-Root-Request-ID, 清单应对齐移除
+	if got := headers.Get("X-Root-Request-ID"); got != "" {
+		t.Errorf("X-Root-Request-ID 已从官方协议移除, 不应再发, 实际 %q", got)
+	}
 }
 
 func TestChatHeadersKeepConversationIdentityStable(t *testing.T) {
-	profile := ProfileConfig{}
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile, err := manifest.GetProfile(string(ProfileDesktop))
+	if err != nil {
+		t.Fatalf("取 desktop 档失败: %v", err)
+	}
 	cred := &Credential{UserID: "user-1", Credentials: TokenCredentials{Access: "token-1"}}
 
-	first := buildChatHeaders(&profile, cred, "session-1")
-	second := buildChatHeaders(&profile, cred, "session-1")
-	other := buildChatHeaders(&profile, cred, "session-2")
+	first, err := buildChatHeaders(manifest, profile, cred, "session-1")
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	second, err := buildChatHeaders(manifest, profile, cred, "session-1")
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	other, err := buildChatHeaders(manifest, profile, cred, "session-2")
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
 
 	// 整轮对话里会话 id 与会话请求 id 必须不变, 否则上游每一轮都当成新会话, 前缀缓存无法复用。
 	if first.Get("X-Conversation-ID") != second.Get("X-Conversation-ID") {
@@ -180,7 +207,14 @@ func TestChatHeadersKeepConversationIdentityStable(t *testing.T) {
 }
 
 func TestSessionSeedUsesHostCanonicalSessionID(t *testing.T) {
-	profile := ProfileConfig{}
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile, err := manifest.GetProfile(string(ProfileDesktop))
+	if err != nil {
+		t.Fatalf("取 desktop 档失败: %v", err)
+	}
 	cred := &Credential{UserID: "user-1", Credentials: TokenCredentials{Access: "token-1"}}
 
 	firstTurn := pluginapi.ExecutorRequest{
@@ -196,9 +230,16 @@ func TestSessionSeedUsesHostCanonicalSessionID(t *testing.T) {
 		OriginalRequest: firstTurn.OriginalRequest,
 	}
 
-	hostFirst := buildChatHeaders(&profile, cred, sessionSeed(firstTurn, firstTurn.OriginalRequest))
-	hostThird := buildChatHeaders(&profile, cred, sessionSeed(thirdTurn, thirdTurn.OriginalRequest))
-	fallback := buildChatHeaders(&profile, cred, sessionSeed(noMetadata, noMetadata.OriginalRequest))
+	mustHeaders := func(seed string) http.Header {
+		h, err := buildChatHeaders(manifest, profile, cred, seed)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		return h
+	}
+	hostFirst := mustHeaders(sessionSeed(firstTurn, firstTurn.OriginalRequest))
+	hostThird := mustHeaders(sessionSeed(thirdTurn, thirdTurn.OriginalRequest))
+	fallback := mustHeaders(sessionSeed(noMetadata, noMetadata.OriginalRequest))
 
 	if hostFirst.Get("X-Conversation-ID") != hostThird.Get("X-Conversation-ID") {
 		t.Errorf("宿主给出的规范会话 id 未被跨轮沿用: %q -> %q",
@@ -531,5 +572,86 @@ func TestReasoningEffortPassthrough(t *testing.T) {
 	}
 	if tested == 0 {
 		t.Fatal("没有任何模型被覆盖, 用例失去意义")
+	}
+}
+
+func TestUserMessageFieldsInjected(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile, err := manifest.GetProfile(string(ProfileDesktop))
+	if err != nil {
+		t.Fatalf("取 desktop 档失败: %v", err)
+	}
+	if len(profile.Body.UserMessageFields) == 0 {
+		t.Fatal("desktop 档清单缺少 body.userMessageFields, 注入路径失去意义")
+	}
+
+	cfg := mustParseConfig(t, nil)
+	raw := `{"model":"workbuddy/hy3","messages":[` +
+		`{"role":"system","content":"sys"},` +
+		`{"role":"user","content":"第一轮"},` +
+		`{"role":"assistant","content":"答"},` +
+		`{"role":"user","content":"第二轮"}]}`
+	body, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true)
+	if err != nil {
+		t.Fatalf("prepareChatRequestBody: %v", err)
+	}
+
+	var out struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+
+	// 官方行为: 每条 user 消息都带簿记; assistant/system 不带
+	userCount := 0
+	for _, msg := range out.Messages {
+		role, _ := msg["role"].(string)
+		if role != "user" {
+			if _, has := msg["agent"]; has {
+				t.Errorf("%s 消息不应注入 agent 字段", role)
+			}
+			continue
+		}
+		userCount++
+		if msg["agent"] != "cli" {
+			t.Errorf("user 消息 agent = %v, want cli", msg["agent"])
+		}
+		if msg["startsNewUserRequest"] != true {
+			t.Errorf("user 消息 startsNewUserRequest = %v, want true", msg["startsNewUserRequest"])
+		}
+		convReqID, _ := msg["conversationRequestId"].(string)
+		if !reHex32.MatchString(convReqID) {
+			t.Errorf("user 消息 conversationRequestId 应为 32 位十六进制, 实际 %q", convReqID)
+		}
+	}
+	if userCount != 2 {
+		t.Fatalf("期望 2 条 user 消息, 实际 %d", userCount)
+	}
+
+	// 会话请求 id 在同一次请求的两条 user 消息上同值(与头组共享同一 {{conversationRequestId}})
+	first, _ := out.Messages[1]["conversationRequestId"].(string)
+	second, _ := out.Messages[3]["conversationRequestId"].(string)
+	if first == "" || first != second {
+		t.Errorf("同请求内 conversationRequestId 应同值, 实际 %q / %q", first, second)
+	}
+}
+
+func TestUnknownPlaceholderFailsFast(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile := manifest.Profiles[string(ProfileDesktop)]
+	profile.Headers = map[string]map[string]string{
+		"chat": {"X-Bogus": "{{noSuchValue}}"},
+	}
+	cred := &Credential{UserID: "u", Credentials: TokenCredentials{Access: "t"}}
+
+	if _, err := buildChatHeaders(manifest, &profile, cred, "seed"); err == nil {
+		t.Error("未知占位符应报错, 实际静默通过")
 	}
 }
