@@ -1,0 +1,1 @@
+{"bump": "minor", "note": "伪装配置收敛到 values 注册表: 头组与 user 簿记注入全部配置化, 新增 X-Agent-Type, 移除官方已不发的 X-Root-Request-ID"}

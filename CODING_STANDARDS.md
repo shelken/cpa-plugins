@@ -13,6 +13,10 @@
 - 提交前检查插件 `README.md` 是否需要更新
 - provider 类插件提交前检查静态字段与模型 list 是否同步，用既有同步脚本更新，有变更向用户汇报
 
+## 验证
+
+- 插件改动提交前须按 `verify-cpa-plugin` skill 完成沙盒验证，单测不覆盖宿主装载与模型注册
+
 ## 文档
 
 - 每个插件维护独立 `README.md`，编写前阅读 `doc-readme` skill

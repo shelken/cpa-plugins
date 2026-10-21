@@ -337,6 +337,21 @@ func (s *sandbox) resolveHost(sdkVersion string) error {
 	build.Dir = s.hostSource
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
+		if _, set := os.LookupEnv("SDKROOT"); set {
+			return fmt.Errorf("构建宿主失败: %w", err)
+		}
+		if compat := compatSDKRoot(); compat != "" {
+			fmt.Printf("[!] 默认 SDK 链接失败 (%v), 用 %s 重试构建宿主\n", err, compat)
+			retry := exec.Command("go", "build", "-o", cached, "./cmd/server")
+			retry.Dir = s.hostSource
+			retry.Env = sdkRootEnv(compat)
+			retry.Stdout, retry.Stderr = os.Stdout, os.Stderr
+			if err := retry.Run(); err != nil {
+				return fmt.Errorf("构建宿主失败 (SDKROOT=%s): %w", compat, err)
+			}
+			s.hostBinary = cached
+			return nil
+		}
 		return fmt.Errorf("构建宿主失败: %w", err)
 	}
 	s.hostBinary = cached

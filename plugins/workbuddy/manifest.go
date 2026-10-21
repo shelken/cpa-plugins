@@ -14,14 +14,16 @@ var defaultStaticConfigBytes []byte
 var cliVersionRegex = regexp.MustCompile(`CLI/([0-9.]+)`)
 
 type ManifestV2 struct {
-	SchemaVersion   int                       `json:"schemaVersion"`
-	Provenance      ProvenanceConfig          `json:"provenance"`
-	Endpoints       EndpointsConfig           `json:"endpoints"`
-	Profiles        map[string]ProfileConfig  `json:"profiles"`
-	IdentityHeaders map[string][]string       `json:"identityHeaders"`
-	RequestBodies   map[string]map[string]any `json:"requestBodies"`
-	Sanitizations   []SanitizationRule        `json:"sanitizations"`
-	Models          []ManifestModel           `json:"models"`
+	SchemaVersion int                       `json:"schemaVersion"`
+	Provenance    ProvenanceConfig          `json:"provenance"`
+	Endpoints     EndpointsConfig           `json:"endpoints"`
+	// Values 是动态值注册表: 声明每个 {{占位符}} 的来源(凭据/manifest 变量/派生)与 scope。
+	// 渲染语义见 identity.go; 字段知识全部在此配置, Go 侧不含具体头名。
+	Values        map[string]ValueDecl      `json:"values"`
+	Profiles      map[string]ProfileConfig  `json:"profiles"`
+	RequestBodies map[string]map[string]any `json:"requestBodies"`
+	Sanitizations []SanitizationRule        `json:"sanitizations"`
+	Models        []ManifestModel           `json:"models"`
 }
 
 type ProvenanceConfig struct {
@@ -59,6 +61,8 @@ type ProfileBodyConfig struct {
 	Omit      []string       `json:"omit"`
 	Set       map[string]any `json:"set"`
 	ExtraVars bool           `json:"extraVars"`
+	// UserMessageFields 声明注入全部 user 消息的簿记字段; 值可引用 {{占位符}}。
+	UserMessageFields map[string]any `json:"userMessageFields,omitempty"`
 }
 
 type SanitizationRule struct {
@@ -159,6 +163,21 @@ func parseManifest(data []byte) (*ManifestV2, error) {
 	}
 
 	return &m, nil
+}
+
+// manifestTemplateVars 提供模板渲染变量(值与 parseManifest 的 {{}} 替换同源)。
+func manifestTemplateVars(m *ManifestV2) map[string]string {
+	vars := map[string]string{}
+	if m == nil {
+		return vars
+	}
+	if m.Provenance.CaptureClientVersion != "" {
+		vars["appVersion"] = m.Provenance.CaptureClientVersion
+	}
+	if match := cliVersionRegex.FindStringSubmatch(m.Provenance.CaptureUserAgent); len(match) > 1 {
+		vars["cliVersion"] = match[1]
+	}
+	return vars
 }
 
 func (m *ManifestV2) GetProfile(profileName string) (*ProfileConfig, error) {

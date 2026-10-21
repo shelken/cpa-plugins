@@ -39,12 +39,12 @@ Preconditions:
   go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models | jq -r '.data[].id'
   ```
 
-- **验证黑名单过滤。** 被剔除的模型不得对外暴露, 预期无输出。正则须兼容前缀形态, 行首行尾定界会漏判 `workbuddy/auto` 这类带前缀泄漏:
+- **验证黑名单过滤。** 被剔除的模型不得对外暴露, 预期无输出。正则须兼容前缀形态:
   ```bash
   go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models \
-    | jq -r '.data[].id' | grep -E '(^|/)(auto|default|hunyuan-3b)$'
+    | jq -r '.data[].id' | grep -E '(^|/)(codewise-completions|hunyuan-3b|kling-video-v3|deepseek-v3-0324)$'
   ```
-  workbuddy 的名单与前缀规则见 `plugins/workbuddy/models.go` 的 `isModelAllowed` (其余插件无此函数, 直报全量); 名单随官方客户端版本变化, 以代码为准
+  workbuddy 的黑名单与能力过滤规则见 `plugins/workbuddy/models.go` 的 `excludeModelReasons` 与 `nonChatReason` (其余插件无此过滤, 直报全量); 名单随官方客户端版本变化, 以代码为准
 - **核对元数据。** `/v1/models` 只返回 id 与归属, 上下文长度等元数据以静态清单与单测为准: 对比 `data/static-config.json` 中该模型的声明, 并跑 `cd plugins/<id> && go test ./...` 中钉住元数据映射的用例 (qwenworkcn 的 `TestFilterAndMapModels` 直接断清单里的 `contextLength`/`maxCompletionTokens`; workbuddy 的 `TestFilterAndMapModels` 用自建样例, 真实清单值不在此用例内)
 
 ## Gotchas
