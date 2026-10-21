@@ -43,6 +43,7 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 | `check-plugins.go` | 仓库不变量检查与发布门禁 | `go run scripts/check-plugins.go --strict` |
 | `verify-chat.go` | 对真实上游发对话请求验证对话链路。`-scenarios` 按场景选判据（`-list` 打印清单），不传则跑默认子集 | `go run scripts/verify-chat.go -base http://<host>:8317 -model workbuddy/hy3 -scenarios session,nonstream` |
 | `management-api.go` | 调用宿主管理面接口 | `go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins` |
+| `copy-auth.go` | 把生产宿主的凭据原样搬进本地沙箱，凭据只在进程内存流转、不回显 | `go run scripts/copy-auth.go -from https://<prod-host> -token-file ~/.cache/cpa-plugins/sandbox/<ids>/management-key <file.json>` |
 
 各脚本的完整参数与行为以脚本自身的 usage 输出为准：
 

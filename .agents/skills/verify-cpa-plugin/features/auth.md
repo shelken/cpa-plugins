@@ -41,18 +41,20 @@ Preconditions:
   go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/get-auth-status?state=<state>'
   ```
 
-- **二次确认凭据归属。** 登录成功后重跑第一步的查询, 新条目 `provider` 与 `status` 满足判据; 这次查询同时是凭据落盘的副作用证明
+- **二次确认凭据归属。** 登录成功后重跑第一步的查询, 新条目 `provider` 与 `status` 满足判据。列表读的是宿主内存里的登记记录, 证明宿主已登记该账号, 不证明文件已落盘; 要落盘证据用 `GET /v0/management/auth-files/download?name=<file>` 确认文件存在
 
-- **把生产凭据搬进沙箱 (真机对话验收的前置)。** 沙箱 `auth/` 目录每次启动都会重建, 所以搬运必须在宿主就绪之后做; 又因为凭据值经任何回显通道都会被打码 (取到打码值直接上线会 401), 下载与上传要在同一个进程里完成, 中间值不落盘、不回显:
-  ```text
-  生产  GET  /v0/management/auth-files/download?name=<file>   # 原样返回凭据 JSON, 此处不做打码
-  沙箱  POST /v0/management/auth-files?name=<file>            # body 即上一步原文
+- **把生产凭据搬进沙箱 (真机对话验收的前置)。** 沙箱 `auth/` 目录每次启动都会重建, 所以搬运必须在宿主就绪之后做; 又因为凭据值经任何回显通道都会被打码 (取到打码值直接上线会 401), 下载 (生产 `GET /v0/management/auth-files/download`) 与上传 (沙箱 `POST /v0/management/auth-files`) 必须在同一进程里完成, 由脚本负责, 中间值不落盘、不回显, 只打印文件名与字节数:
+  ```bash
+  go run scripts/copy-auth.go -from https://<prod-host> \
+    -token-file ~/.cache/cpa-plugins/sandbox/<ids>/management-key <file.json> [<file2.json> ...]
   ```
-  两端鉴权分别用生产密钥 (由 `sec-run python3` 注入 `CPA_TOKEN`) 与沙箱密钥 (读 `-token-file` 同路径), 打印只留文件名与字节数。搬完按上一条再查一次沙箱 `auth-files`, 判据同样是 `provider` 与 `status` 为 `active`
+  生产密钥经 `sec-run` 隐式读取, 生产侧只做 GET。搬完按上一条再查一次沙箱 `auth-files`, 判据同样是 `provider` 与 `status` 为 `active`; 文件名取自生产 `auth-files` 的 `name` 字段
 
 ## Gotchas
 
 - 已登录但调用报 unknown provider -> 查 `auth-files` 对应条目的 `provider` 是否与插件 id 一致
 - 鉴权失败后请求直接 503 -> 宿主触发凭据失败冷却熔断, 等冷却结束或重启宿主; 冷却期失败不能当功能失败
-- 登录中途终止残留悬挂会话 -> `go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/oauth-session?state=<state>' -method DELETE` 释放服务端会话; 脚本默认 GET, 缺 `-method DELETE` 会 404; 缺 `state` 返回 `400 missing state`, 成功返回 `{"status":"ok","cancelled":true}`
+- 登录中途终止残留悬挂会话 -> `go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/oauth-session?state=<state>' -method DELETE` 释放服务端会话; 脚本默认 GET, 缺 `-method DELETE` 会 404; 缺 `state` 返回 `400 missing state`, 成功返回 `{"status":"ok","cancelled":<bool>}`, 会话已不存在时 `cancelled` 为 `false`; 取消后再查 `get-auth-status` 应为 `unknown or expired state`
+- 沙箱注入后 `auth-files` 里同一文件名出现两条 -> v8.0.4 宿主经 POST 上传时按文件路径登记一条, 文件监听器经插件解析又按 `userId` 登记一条, 两条共用同一文件; 用 `name`/`id`/`auth_index` 区分, 不能用条数判断文件数
+- 每次对话后宿主日志出现 `auth file changed (REMOVE)` 与 `(WRITE)` 交替 -> 宿主在记录请求结果后持久化凭据, 插件凭据走临时文件原子替换, 监听器把它看成先删后写; 这不是插件在刷新 token, 只要记录仍为 `active` 就不影响验收
 - 登录链路驱动沙箱时管理密钥用 `-token-file`, 生产密钥对沙箱必然 401

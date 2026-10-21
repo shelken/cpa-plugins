@@ -88,7 +88,7 @@ go run scripts/management-api.go -path /v0/management/plugins -token-file ~/.cac
 
 - `HTTP 200` 且返回插件 JSON 列表
 - 目标插件 `registered` 与 `enabled` 与 `effective_enabled` 均为 `true`
-- 宿主版本从响应头 `X-CPA-VERSION` 读取, 额度特性要求 `>= v7.2.159` (见 features/quota.md)
+- 宿主版本从响应头 `X-CPA-VERSION` 读取 (本地沙箱宿主由源码构建, 报 `dev`); 插件依赖 v8 SDK, 宿主须为 v8
 
 ## Drive
 
@@ -104,8 +104,8 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/a
 # 读取指定插件当前配置
 go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins/<id>/config
 
-# 修改插件配置 (写操作须经确认, 仅对沙箱执行)
-go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins/<id>/config -method PUT -body '{"enabled":true}'
+# 修改插件配置 (写操作须经确认, 仅对沙箱执行); PUT 整体替换配置对象, 只改个别键用 PATCH
+go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins/<id>/config -method PATCH -body '{"enabled":true}'
 
 # 按客户端身份探测 /v1 接口, 客户端密钥由脚本就地取得
 go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models
@@ -166,6 +166,7 @@ go run scripts/verify-chat.go -list    # 列出场景与请求成本
 
 - `scripts/management-api.go`: 管理面单点交互工具, 默认由 `sec-run` 注入 `CPA_TOKEN` 鉴权, 沙箱场景用 `-token-file` 读沙箱密钥, 响应里的密钥与凭据字段默认打码; `-auth client` 时改为按客户端身份访问 `/v1`, 客户端密钥由进程自己从管理面取; `-body-file` 从文件读请求体, 用于凭据上传
 - `scripts/verify-chat.go`: 对话链路验收入口, `-scenarios` 选场景 (`-list` 打印清单); 判据项见 features/chat.md
+- `scripts/copy-auth.go`: 把生产凭据原样搬进沙箱 (真机对话验收的前置, 须在沙箱宿主就绪后执行); 下载与上传在同一进程内完成, 凭据不落盘不回显, 只打印文件名与字节数, 生产侧只读, 用法见 features/auth.md
 - `scripts/dev-sandbox.go`: 沙箱启动与装载断言套件, `-plugin` 可重复传参一次起多个插件, `-checks` 选断言 (`-checks list` 打印清单); 只覆盖装载与报送, 替代不了真机对话验收。启动前会检查端口空闲, 被占用直接报错而非拿陌生实例做断言
 - `scripts/check-plugins.go`: 检查仓库清单、构建矩阵、声明平台一致性
 - `scripts/verify-registry-install.go`: 在线拉取已发布产物校验哈希与动态库格式
@@ -189,4 +190,4 @@ go run scripts/verify-chat.go -list    # 列出场景与请求成本
 - [扫码登录与凭据保存](features/auth.md)
 - [模型注册与可用性](features/models.md)
 - [对话链路](features/chat.md)
-- [额度查询与版本门禁](features/quota.md)
+- [额度查询](features/quota.md)
