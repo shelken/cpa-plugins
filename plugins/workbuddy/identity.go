@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/google/uuid"
 )
@@ -37,33 +36,9 @@ type valueResolver struct {
 	seed    string
 	cred    *Credential
 	vars    map[string]string // manifest 模板变量(appVersion/cliVersion 等)
-	session map[string]string // scope=session 的缓存, 按 seed 命中
-	mu      sync.Mutex
+	session map[string]string // request 内部 scope=session 缓存
 }
 
-// sessionCache 按 seed 缓存会话级值, 会话内多次请求复用同一批 ID。
-var sessionCache = struct {
-	sync.Mutex
-	bySeed map[string]map[string]string
-}{bySeed: map[string]map[string]string{}}
-
-func newSessionValues(seed string) map[string]string {
-	sessionCache.Lock()
-	defer sessionCache.Unlock()
-	if v, ok := sessionCache.bySeed[seed]; ok {
-		return v
-	}
-	v := map[string]string{}
-	sessionCache.bySeed[seed] = v
-	// 上限保护: 宿主长驻时 seed 数量受凭据与会话数约束, 仍防御性截断最旧条目
-	if len(sessionCache.bySeed) > 512 {
-		for k := range sessionCache.bySeed {
-			delete(sessionCache.bySeed, k)
-			break
-		}
-	}
-	return v
-}
 
 func (r *valueResolver) value(name string) (string, error) {
 	decl, ok := r.decls[name]
@@ -86,8 +61,6 @@ func (r *valueResolver) value(name string) (string, error) {
 		return "", fmt.Errorf("values 声明 %s 缺少 from/derive", name)
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if decl.Scope == "session" {
 		if v, ok := r.session[name]; ok {
 			return v, nil
@@ -99,7 +72,10 @@ func (r *valueResolver) value(name string) (string, error) {
 	if decl.Scope != "session" {
 		material += "\x00" + uuid.NewString()
 	}
-	v := derive(decl.Derive, material)
+	v, err := derive(decl.Derive, material)
+	if err != nil {
+		return "", fmt.Errorf("derive %s: %w", name, err)
+	}
 	if decl.Scope == "session" {
 		r.session[name] = v
 	}
@@ -108,7 +84,7 @@ func (r *valueResolver) value(name string) (string, error) {
 
 // derive 复刻原 executor.go 的两种派生形态: uuid(带横线)与 hex32(无横线)。
 // salt 里已包含用途前缀与种子, 再拼 name 避免同一 salt 声明被多个 name 复用时同值。
-func derive(kind, material string) string {
+func derive(kind, material string) (string, error) {
 	switch kind {
 	case "uuid":
 		sum := sha256.Sum256([]byte(material))
@@ -116,17 +92,24 @@ func derive(kind, material string) string {
 		copy(raw[:], sum[:16])
 		raw[6] = (raw[6] & 0x0f) | 0x40
 		raw[8] = (raw[8] & 0x3f) | 0x80
-		return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+		return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16]), nil
 	case "hex32":
 		sum := sha256.Sum256([]byte(material))
-		return hex.EncodeToString(sum[:16])
+		return hex.EncodeToString(sum[:16]), nil
+	default:
+		return "", fmt.Errorf("未知的 derive 类型: %q", kind)
 	}
-	return ""
 }
 
 // resolveValues 求值注册表全部声明; 任一失败即报错, 不发残缺请求。
 func resolveValues(decls map[string]ValueDecl, seed string, cred *Credential, vars map[string]string) (map[string]string, error) {
-	r := &valueResolver{decls: decls, seed: seed, cred: cred, vars: vars, session: newSessionValues(seed)}
+	r := &valueResolver{
+		decls:   decls,
+		seed:    seed,
+		cred:    cred,
+		vars:    vars,
+		session: make(map[string]string),
+	}
 	out := make(map[string]string, len(decls))
 	for name := range decls {
 		v, err := r.value(name)
@@ -137,6 +120,7 @@ func resolveValues(decls map[string]ValueDecl, seed string, cred *Credential, va
 	}
 	return out, nil
 }
+
 
 // renderValue 渲染字符串里的 {{占位符}}。整串恰为一个占位符时保留值类型(注入 body 用)。
 // 未知占位符报错: 配置写错头名静默上线比失败更糟。
@@ -160,8 +144,7 @@ func renderValue(tpl string, values map[string]string, raw map[string]any) (any,
 		}
 		end := strings.Index(tpl[start:], "}}")
 		if end < 0 {
-			b.WriteString(tpl)
-			return b.String(), nil
+			return nil, fmt.Errorf("模板中存在未闭合的占位符: %q", tpl)
 		}
 		b.WriteString(tpl[:start])
 		name := strings.TrimSpace(tpl[start+2 : start+end])

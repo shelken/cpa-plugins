@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -654,4 +655,113 @@ func TestUnknownPlaceholderFailsFast(t *testing.T) {
 	if _, err := buildChatHeaders(manifest, &profile, cred, "seed"); err == nil {
 		t.Error("未知占位符应报错, 实际静默通过")
 	}
+}
+
+func TestHeaderAndBodyConversationRequestIDMatch(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile, err := manifest.GetProfile(string(ProfileDesktop))
+	if err != nil {
+		t.Fatalf("取 desktop 档失败: %v", err)
+	}
+
+	cfg := mustParseConfig(t, nil)
+	raw := `{"model":"workbuddy/hy3","messages":[{"role":"user","content":"hello"}]}`
+	seed := "test-session-seed-12345"
+	cred := &Credential{UserID: "user-1", Credentials: TokenCredentials{Access: "token-1"}}
+	vars := manifestTemplateVars(manifest)
+
+	values, err := resolveValues(manifest.Values, seed, cred, vars)
+	if err != nil {
+		t.Fatalf("resolveValues: %v", err)
+	}
+
+	body, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true, values)
+	if err != nil {
+		t.Fatalf("prepareChatRequestBody: %v", err)
+	}
+	headers, err := renderHeaders(profile.Headers["chat"], values)
+	if err != nil {
+		t.Fatalf("renderHeaders: %v", err)
+	}
+
+	var out struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+
+	bodyConvID, _ := out.Messages[0]["conversationRequestId"].(string)
+	headerConvID := headers.Get("X-Conversation-Request-ID")
+
+	if bodyConvID == "" || headerConvID == "" {
+		t.Fatalf("ID 不应为空: body=%q header=%q", bodyConvID, headerConvID)
+	}
+	if bodyConvID != headerConvID {
+		t.Errorf("body 的 conversationRequestId (%s) 应与请求头 X-Conversation-Request-ID (%s) 完全一致",
+			bodyConvID, headerConvID)
+	}
+}
+
+func TestUnclosedPlaceholderFailsFast(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile := manifest.Profiles[string(ProfileDesktop)]
+	profile.Headers = map[string]map[string]string{
+		"chat": {"Authorization": "Bearer {{accessToken"},
+	}
+	cred := &Credential{UserID: "u", Credentials: TokenCredentials{Access: "t"}}
+
+	if _, err := buildChatHeaders(manifest, &profile, cred, "seed"); err == nil {
+		t.Error("未闭合占位符应报错, 实际静默通过")
+	}
+}
+
+func TestUnknownDeriveTypeFailsFast(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	manifest.Values["invalid"] = ValueDecl{
+		Derive: "unknown-kind",
+		Salt:   "salt",
+		Scope:  "session",
+	}
+	cred := &Credential{UserID: "u", Credentials: TokenCredentials{Access: "t"}}
+	vars := manifestTemplateVars(manifest)
+
+	if _, err := resolveValues(manifest.Values, "seed", cred, vars); err == nil {
+		t.Error("未知的 derive 类型应报错, 实际静默通过")
+	}
+}
+
+func TestConcurrentResolveValuesSafe(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	cred := &Credential{UserID: "u", Credentials: TokenCredentials{Access: "t"}}
+	vars := manifestTemplateVars(manifest)
+	const workers = 50
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			vals, err := resolveValues(manifest.Values, "same-seed", cred, vars)
+			if err != nil {
+				t.Errorf("resolveValues in worker: %v", err)
+				return
+			}
+			if vals["conversationRequestId"] == "" {
+				t.Errorf("conversationRequestId is empty")
+			}
+		}()
+	}
+	wg.Wait()
 }

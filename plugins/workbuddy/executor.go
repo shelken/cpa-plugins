@@ -224,7 +224,7 @@ func messagesToJSON(messages []chatMessage) []any {
 	return out
 }
 
-func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *ManifestV2, profile *ProfileConfig, isStream bool) ([]byte, error) {
+func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *ManifestV2, profile *ProfileConfig, isStream bool, values ...map[string]string) ([]byte, error) {
 	var inReq chatCompletionRequest
 	if err := json.Unmarshal(reqPayload, &inReq); err != nil {
 		return nil, fmt.Errorf("unmarshal chat completions request: %w", err)
@@ -249,14 +249,18 @@ func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *Mani
 	// 官方 user 消息簿记注入: 字段与取值由配置声明(body.userMessageFields),
 	// 占位符引用 values 注册表。此处只执行注入, 不携带任何字段知识。
 	if len(profile.Body.UserMessageFields) > 0 {
-		vars := manifestTemplateVars(manifest)
-		cred := &Credential{}
-		// 注入只用到会话级派生值(不含凭据字段), 空凭据即安全; 引用凭据类占位符时会报错拦截。
-		values, err := resolveValues(manifest.Values, "", cred, vars)
-		if err != nil {
-			return nil, fmt.Errorf("resolve user field values: %w", err)
+		var resolvedValues map[string]string
+		if len(values) > 0 {
+			resolvedValues = values[0]
 		}
-		if err := injectUserMessageFields(inReq.Messages, profile.Body.UserMessageFields, values); err != nil {
+		if resolvedValues == nil {
+			var err error
+			resolvedValues, err = resolveValues(manifest.Values, "", &Credential{}, manifestTemplateVars(manifest))
+			if err != nil {
+				return nil, fmt.Errorf("resolve user field values: %w", err)
+			}
+		}
+		if err := injectUserMessageFields(inReq.Messages, profile.Body.UserMessageFields, resolvedValues); err != nil {
 			return nil, err
 		}
 	}
@@ -404,14 +408,20 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 		payload = req.OriginalRequest
 	}
 
-	bodyBytes, err := prepareChatRequestBody(cfg, payload, manifest, profile, true)
-	if err != nil {
-		return nil, fmt.Errorf("prepare stream chat body: %w", err)
-	}
-
 	seedPayload := req.OriginalRequest
 	if len(seedPayload) == 0 {
 		seedPayload = payload
+	}
+	seed := sessionSeed(req, seedPayload)
+	vars := manifestTemplateVars(manifest)
+	values, err := resolveValues(manifest.Values, seed, cred, vars)
+	if err != nil {
+		return nil, fmt.Errorf("resolve values: %w", err)
+	}
+
+	bodyBytes, err := prepareChatRequestBody(cfg, payload, manifest, profile, true, values)
+	if err != nil {
+		return nil, fmt.Errorf("prepare stream chat body: %w", err)
 	}
 
 	chatURL := manifest.BuildURL(manifest.Endpoints.ChatCompletions)
@@ -420,7 +430,7 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 		return nil, fmt.Errorf("create stream chat request: %w", err)
 	}
 
-	headers, err := buildChatHeaders(manifest, profile, cred, sessionSeed(req, seedPayload))
+	headers, err := renderHeaders(profile.Headers["chat"], values)
 	if err != nil {
 		return nil, fmt.Errorf("build stream chat headers: %w", err)
 	}
@@ -510,14 +520,22 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 
 	// 上游只接受流式对话, 发 stream:false 会被拒 (400/11101) 并把凭据打成不可用,
 	// 因此这里始终按流式请求上游, 在插件内聚合成单条完整响应再交给宿主。
-	bodyBytes, err := prepareChatRequestBody(cfg, payload, manifest, profile, true)
-	if err != nil {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("prepare non-stream chat body: %w", err)
-	}
-
 	seedPayload := req.OriginalRequest
 	if len(seedPayload) == 0 {
 		seedPayload = payload
+	}
+	seed := sessionSeed(req, seedPayload)
+	vars := manifestTemplateVars(manifest)
+	values, err := resolveValues(manifest.Values, seed, cred, vars)
+	if err != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("resolve values: %w", err)
+	}
+
+	// 上游只接受流式对话, 发 stream:false 会被拒 (400/11101) 并把凭据打成不可用,
+	// 因此这里始终按流式请求上游, 在插件内聚合成单条完整响应再交给宿主。
+	bodyBytes, err := prepareChatRequestBody(cfg, payload, manifest, profile, true, values)
+	if err != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("prepare non-stream chat body: %w", err)
 	}
 
 	chatURL := manifest.BuildURL(manifest.Endpoints.ChatCompletions)
@@ -526,7 +544,7 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("create non-stream chat request: %w", err)
 	}
 
-	headers, err := buildChatHeaders(manifest, profile, cred, sessionSeed(req, seedPayload))
+	headers, err := renderHeaders(profile.Headers["chat"], values)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("build chat headers: %w", err)
 	}
