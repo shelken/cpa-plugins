@@ -8,7 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -764,4 +766,167 @@ func TestConcurrentResolveValuesSafe(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// 宿主 HTTP 流回调替身: 按 method 分发, 记录收到的请求供断言。
+type fakeHostHTTP struct {
+	mu           sync.Mutex
+	doStreamReq  hostHTTPRequest
+	sseChunks    []string
+	streamOpen   bool
+	streamClosed bool
+	readErr      error
+}
+
+func (f *fakeHostHTTP) install(t *testing.T) {
+	t.Helper()
+	previous := callHost
+	t.Cleanup(func() { callHost = previous })
+	streamID := "test-stream-1"
+	callHost = func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case pluginabi.MethodHostHTTPDoStream:
+			req := payload.(hostHTTPRequest)
+			f.mu.Lock()
+			f.doStreamReq = req
+			f.streamOpen = true
+			f.mu.Unlock()
+			return json.Marshal(hostHTTPStreamResponse{StatusCode: 200, StreamID: streamID})
+		case pluginabi.MethodHostHTTPStreamRead:
+			f.mu.Lock()
+			open, pending := f.streamOpen, f.sseChunks
+			f.mu.Unlock()
+			if !open {
+				return nil, fmt.Errorf("host http stream %q is not open", streamID)
+			}
+			if f.readErr != nil {
+				return json.Marshal(hostHTTPStreamReadResponse{Error: f.readErr.Error(), Done: true})
+			}
+			if len(pending) == 0 {
+				return json.Marshal(hostHTTPStreamReadResponse{Done: true})
+			}
+			payload := pending[0]
+			f.mu.Lock()
+			f.sseChunks = pending[1:]
+			f.mu.Unlock()
+			return json.Marshal(hostHTTPStreamReadResponse{Payload: []byte(payload)})
+		case pluginabi.MethodHostHTTPStreamClose:
+			f.mu.Lock()
+			f.streamClosed = true
+			f.streamOpen = false
+			f.mu.Unlock()
+			return json.Marshal(map[string]any{})
+		case pluginabi.MethodHostStreamEmit, pluginabi.MethodHostStreamClose:
+			return json.Marshal(map[string]any{})
+		default:
+			return nil, fmt.Errorf("fake host: unexpected callback %s", method)
+		}
+	}
+}
+
+func (f *fakeHostHTTP) upstreamCallbackID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.doStreamReq.HostCallbackID
+}
+
+func TestExecuteStreamForwardsHostCallbackID(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	cfg := mustParseConfig(t, nil)
+	fake := &fakeHostHTTP{sseChunks: []string{"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", "data: [DONE]\n\n"}}
+	fake.install(t)
+
+	raw := `{"model":"workbuddy/hy3","messages":[{"role":"user","content":"hi"}]}`
+	testCred := []byte(`{"userId":"u","credentials":{"access":"t"}}`)
+	resp, err := handleExecuteStream(manifest, cfg, pluginapi.ExecutorRequest{
+		Payload:         []byte(raw),
+		OriginalRequest: []byte(raw),
+		StorageJSON:     testCred,
+	}, "downstream-1", "callback-42")
+	if err != nil {
+		t.Fatalf("handleExecuteStream: %v", err)
+	}
+	if _, hasHeaders := resp["headers"]; !hasHeaders {
+		t.Errorf("response should carry SSE headers, got %v", resp)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if fake.streamClosed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := fake.upstreamCallbackID(); got != "callback-42" {
+		t.Errorf("host.http.do_stream 应携带下游 callback id, 实际 %q", got)
+	}
+	if !fake.streamClosed {
+		t.Error("上游流结束后应调用 host.http.stream_close")
+	}
+}
+
+func TestExecuteStreamDownstreamCancelAbortsUpstreamRead(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	cfg := mustParseConfig(t, nil)
+	// 首块正常下发, 之后宿主侧因下游 499 使流失效: read 永远报错。
+	fake := &fakeHostHTTP{sseChunks: []string{"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"}}
+	fake.readErr = fmt.Errorf("context canceled")
+	fake.install(t)
+
+	raw := `{"model":"workbuddy/hy3","messages":[{"role":"user","content":"hi"}]}`
+	testCred := []byte(`{"userId":"u","credentials":{"access":"t"}}`)
+	if _, err := handleExecuteStream(manifest, cfg, pluginapi.ExecutorRequest{
+		Payload:         []byte(raw),
+		OriginalRequest: []byte(raw),
+		StorageJSON:     testCred,
+	}, "downstream-1", "callback-7"); err != nil {
+		t.Fatalf("handleExecuteStream: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fake.mu.Lock()
+		closed := fake.streamClosed
+		fake.mu.Unlock()
+		if closed {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("下游取消后插件应通过 read 错误退出并关闭上游流, 而不是无限阻塞")
+}
+
+func TestExecuteNonStreamAggregatesViaHostStream(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	cfg := mustParseConfig(t, nil)
+	upstream := "data: {\"choices\":[{\"delta\":{\"content\":\"ANSWER\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	fake := &fakeHostHTTP{sseChunks: []string{upstream}}
+	fake.install(t)
+
+	raw := `{"model":"workbuddy/hy3","messages":[{"role":"user","content":"hi"}]}`
+	testCred := []byte(`{"userId":"u","credentials":{"access":"t"}}`)
+	resp, err := handleExecute(manifest, cfg, pluginapi.ExecutorRequest{
+		Payload:         []byte(raw),
+		OriginalRequest: []byte(raw),
+		StorageJSON:     testCred,
+	}, "callback-9")
+	if err != nil {
+		t.Fatalf("handleExecute: %v", err)
+	}
+	if !strings.Contains(string(resp.Payload), "ANSWER") {
+		t.Errorf("聚合结果应包含上游内容, 实际 %q", string(resp.Payload))
+	}
+	if got := fake.upstreamCallbackID(); got != "callback-9" {
+		t.Errorf("非流式同样应携带 callback id, 实际 %q", got)
+	}
 }

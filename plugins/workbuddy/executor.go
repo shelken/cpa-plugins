@@ -1,17 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -321,15 +317,6 @@ func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *Mani
 	return json.Marshal(outMap)
 }
 
-// 对话请求不挂整体超时: 长思考流的响应体要读几十秒到几分钟, http.Client.Timeout
-// 会在中途掐断连接, 表现成尾部帧与 usage 整段消失。连接阶段仍保留上限, 响应体
-// 读取交给上游自然结束。
-var chatHTTPClient = func() *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 60 * time.Second
-	return &http.Client{Transport: transport}
-}()
-
 // 宿主在鉴权选择阶段算好的规范会话 id 的元数据键, 定义见
 // sdk/cliproxy/executor.CanonicalSessionIDMetadataKey。
 const canonicalSessionIDKey = "canonical_session_id"
@@ -388,7 +375,7 @@ func buildChatHeaders(manifest *ManifestV2, profile *ProfileConfig, cred *Creden
 	return renderHeaders(group, values)
 }
 
-func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest, streamID string) (map[string]any, error) {
+func handleExecuteStream(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest, streamID, hostCallbackID string) (map[string]any, error) {
 	cred, err := parseCredential(req.StorageJSON)
 	if err != nil {
 		return nil, fmt.Errorf("parse storage json for stream execute: %w", err)
@@ -425,16 +412,11 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 	}
 
 	chatURL := manifest.BuildURL(manifest.Endpoints.ChatCompletions)
-	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, chatURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("create stream chat request: %w", err)
-	}
 
 	headers, err := renderHeaders(profile.Headers["chat"], values)
 	if err != nil {
 		return nil, fmt.Errorf("build stream chat headers: %w", err)
 	}
-	httpReq.Header = headers
 
 	go func() {
 		// 宿主侧 close 是幂等的 (stream_bridge.go:231 取走条目后第二次直接返回), 所以这里
@@ -446,47 +428,47 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 		}
 		defer closeStream("")
 
-		resp, errDo := chatHTTPClient.Do(httpReq)
+		// 上游连接挂到宿主的 operation 上: 客户端 499 或插件卸载时, 宿主级联取消,
+		// stream_read 立即报错, 这里不会无限期阻塞在响应体读取上。
+		upstreamStatus, upstreamStreamID, errDo := hostHTTPDoStream(
+			hostCallbackID, http.MethodPost, chatURL, map[string][]string(headers), bodyBytes)
 		if errDo != nil {
 			closeStream(errDo.Error())
 			return
 		}
-		defer resp.Body.Close()
+		defer hostHTTPStreamClose(upstreamStreamID)
 
-		if resp.StatusCode != http.StatusOK {
-			errBytes, _ := io.ReadAll(resp.Body)
-			closeStream(fmt.Sprintf("upstream chat error %d: %s", resp.StatusCode, string(errBytes)))
+		if upstreamStatus != http.StatusOK {
+			closeStream(fmt.Sprintf("upstream chat error %d", upstreamStatus))
 			return
 		}
 
-		reader := bufio.NewReader(resp.Body)
 		for {
-			line, errRead := reader.ReadBytes('\n')
-			if len(line) > 0 {
-				lineStr := string(line)
-				trimmed := strings.TrimSpace(lineStr)
-
-				if strings.HasPrefix(trimmed, ":") {
-					continue
-				}
-
-				if trimmed == "data: [DONE]" {
-					break
-				}
-
-				if payload, ok := ssePayload(trimmed); ok {
-					emitErr := callHostStreamEmit(streamID, []byte(payload))
-					if emitErr != nil {
+			chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
+			if len(chunk) > 0 {
+				for _, line := range bytes.SplitAfter(chunk, []byte("\n")) {
+					trimmed := strings.TrimSpace(string(line))
+					if strings.HasPrefix(trimmed, ":") || trimmed == "" {
+						continue
+					}
+					if trimmed == "data: [DONE]" {
+						done = true
 						break
+					}
+					if payload, ok := ssePayload(trimmed); ok {
+						emitErr := callHostStreamEmit(streamID, []byte(payload))
+						if emitErr != nil {
+							break
+						}
 					}
 				}
 			}
-
 			if errRead != nil {
-				if errRead != io.EOF {
-					closeStream(errRead.Error())
-				}
-				break
+				closeStream(errRead.Error())
+				return
+			}
+			if done {
+				return
 			}
 		}
 	}()
@@ -498,7 +480,7 @@ func handleExecuteStream(ctx context.Context, manifest *ManifestV2, cfg *PluginC
 	}, nil
 }
 
-func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
+func handleExecute(manifest *ManifestV2, cfg *PluginConfig, req pluginapi.ExecutorRequest, hostCallbackID string) (pluginapi.ExecutorResponse, error) {
 	cred, err := parseCredential(req.StorageJSON)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("parse storage json for execute: %w", err)
@@ -539,33 +521,36 @@ func handleExecute(ctx context.Context, manifest *ManifestV2, cfg *PluginConfig,
 	}
 
 	chatURL := manifest.BuildURL(manifest.Endpoints.ChatCompletions)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("create non-stream chat request: %w", err)
-	}
 
 	headers, err := renderHeaders(profile.Headers["chat"], values)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("build chat headers: %w", err)
 	}
-	httpReq.Header = headers
 
-	resp, err := chatHTTPClient.Do(httpReq)
-	if err != nil {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("execute non-stream chat request: %w", err)
+	upstreamStatus, upstreamStreamID, errDo := hostHTTPDoStream(
+		hostCallbackID, http.MethodPost, chatURL, map[string][]string(headers), bodyBytes)
+	if errDo != nil {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("execute non-stream chat request: %w", errDo)
 	}
-	defer resp.Body.Close()
+	defer hostHTTPStreamClose(upstreamStreamID)
 
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("read non-stream chat response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return pluginapi.ExecutorResponse{}, fmt.Errorf("upstream chat error %d: %s", resp.StatusCode, string(respBytes))
+	if upstreamStatus != http.StatusOK {
+		return pluginapi.ExecutorResponse{}, fmt.Errorf("upstream chat error %d", upstreamStatus)
 	}
 
-	aggregated, err := aggregateChatStream(respBytes)
+	var sseLines []byte
+	for {
+		chunk, done, errRead := hostHTTPStreamRead(upstreamStreamID)
+		sseLines = append(sseLines, chunk...)
+		if errRead != nil {
+			return pluginapi.ExecutorResponse{}, fmt.Errorf("read non-stream chat response: %w", errRead)
+		}
+		if done {
+			break
+		}
+	}
+
+	aggregated, err := aggregateChatStream(sseLines)
 	if err != nil {
 		return pluginapi.ExecutorResponse{}, fmt.Errorf("aggregate upstream stream: %w", err)
 	}

@@ -116,6 +116,27 @@ type rpcStreamCloseRequest struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// hostHTTPRequest 是 host.http.do_stream 的请求体。host_callback_id 让宿主把
+// operation ctx 挂到真实的下游请求上, 客户端断开时级联取消上游连接。
+type hostHTTPRequest struct {
+	HostCallbackID string              `json:"host_callback_id"`
+	Method         string              `json:"method"`
+	URL            string              `json:"url"`
+	Headers        map[string][]string `json:"headers,omitempty"`
+	Body           []byte              `json:"body"`
+}
+
+type hostHTTPStreamResponse struct {
+	StatusCode int    `json:"status_code"`
+	StreamID   string `json:"stream_id"`
+}
+
+type hostHTTPStreamReadResponse struct {
+	Payload []byte `json:"payload,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Done    bool   `json:"done,omitempty"`
+}
+
 var (
 	pluginStateMu  sync.RWMutex
 	currentConfig  *PluginConfig
@@ -171,7 +192,8 @@ func cliproxyPluginShutdown() {
 	log.Println("[qwenworkcn] plugin shutting down")
 }
 
-func callHost(method string, payload any) (json.RawMessage, error) {
+// callHost 走 CGO 宿主回调。测试里可整体替换为内存替身, 避免依赖真实宿主。
+var callHost = func(method string, payload any) (json.RawMessage, error) {
 	var rawPayload []byte
 	if payload != nil {
 		var err error
@@ -241,6 +263,51 @@ func callHostStreamClose(streamID string, errMsg string) error {
 		Error:    errMsg,
 	})
 	return err
+}
+
+// hostHTTPDoStream 通过宿主发起流式上游请求。宿主把请求挂到 callback ctx 的
+// operation 上: 下游客户端断开(499)或插件实例关闭时, 宿主级联取消,
+// 上游 HTTP 请求立即中断, 不再留僵尸连接。
+func hostHTTPDoStream(hostCallbackID, method, url string, headers map[string][]string, body []byte) (int, string, error) {
+	raw, err := callHost(pluginabi.MethodHostHTTPDoStream, hostHTTPRequest{
+		HostCallbackID: hostCallbackID,
+		Method:         method,
+		URL:            url,
+		Headers:        headers,
+		Body:           body,
+	})
+	if err != nil {
+		return 0, "", err
+	}
+	var resp hostHTTPStreamResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return 0, "", fmt.Errorf("decode host.http.do_stream response: %w", err)
+	}
+	if resp.StreamID == "" {
+		return 0, "", fmt.Errorf("host.http.do_stream returned empty stream_id")
+	}
+	return resp.StatusCode, resp.StreamID, nil
+}
+
+// hostHTTPStreamRead 读取宿主上游流的一个分块。下游取消时宿主使流失效,
+// read 返回 error, 调用方据此退出而不会卡在读上。
+func hostHTTPStreamRead(streamID string) ([]byte, bool, error) {
+	raw, err := callHost(pluginabi.MethodHostHTTPStreamRead, map[string]string{"stream_id": streamID})
+	if err != nil {
+		return nil, false, err
+	}
+	var resp hostHTTPStreamReadResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, false, fmt.Errorf("decode host.http.stream_read response: %w", err)
+	}
+	if resp.Error != "" {
+		return nil, true, fmt.Errorf("%s", resp.Error)
+	}
+	return resp.Payload, resp.Done, nil
+}
+
+func hostHTTPStreamClose(streamID string) {
+	_, _ = callHost(pluginabi.MethodHostHTTPStreamClose, map[string]string{"stream_id": streamID})
 }
 
 func getManifest() (*ManifestV2, error) {
@@ -418,7 +485,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		resp, err := handleExecuteStream(context.Background(), m, getConfig(), rpcReq.ExecutorRequest, rpcReq.StreamID)
+		resp, err := handleExecuteStream(m, getConfig(), rpcReq.ExecutorRequest, rpcReq.StreamID, rpcReq.HostCallbackID)
 		if err != nil {
 			return nil, err
 		}
@@ -436,7 +503,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		resp, err := handleExecute(context.Background(), m, getConfig(), rpcReq.ExecutorRequest)
+		resp, err := handleExecute(m, getConfig(), rpcReq.ExecutorRequest, rpcReq.HostCallbackID)
 		if err != nil {
 			return nil, err
 		}
