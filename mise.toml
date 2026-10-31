@@ -1,14 +1,9 @@
 min_version = "2024.9.5"
 
-[tools]
-pre-commit = "4.6.2"
-pipx = "1.16.7"
-"pipx:pre-commit-hooks" = "6.0.0"
-
 [hooks]
-postinstall = "pre-commit install"
-enter = "test -f .git/hooks/pre-commit || pre-commit install"
+postinstall = "prek install"
+enter = "test -f .git/hooks/pre-commit || prek install"
 
 [tasks.setup]
-description = "首次环境初始化（安装 pre-commit hooks）"
-run = "pre-commit install"
+description = "首次环境初始化（安装 prek git hooks）"
+run = "prek install"

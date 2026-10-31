@@ -2,26 +2,21 @@ default_stages:
   - pre-commit
 
 repos:
-  - repo: local
+  # 纯文本检查走 prek 内置实现: 不克隆仓库、不建 Python 环境, 离线可用。
+  # builtin 是 prek 扩展, 本段不再兼容上游 pre-commit 命令。
+  - repo: builtin
     hooks:
-      - id: check-merge-conflicts
-        name: check-merge-conflicts
-        entry: mise exec -- check-merge-conflict
-        language: system
+      - id: check-merge-conflict
         types: [text]
 
       - id: end-of-file-fixer
-        name: end-of-file-fixer
-        entry: mise exec -- end-of-file-fixer
-        language: system
         types: [text]
 
-      - id: trim-trailing-whitespace
-        name: trim-trailing-whitespace
-        entry: mise exec -- trailing-whitespace-fixer
-        language: system
+      - id: trailing-whitespace
         types: [text]
 
+  - repo: local
+    hooks:
       # 不用 --strict: 它把 WARN 也判为失败, 但「sha256 待回填」是发布流程里的
       # 正常中间态 —— publish 只产出地址, 哈希由 CI 的 record 作业用真实上传
       # 产物回填。--release-ready 更严 (把待回填判为 FAIL), 同样不适用本地提交。
