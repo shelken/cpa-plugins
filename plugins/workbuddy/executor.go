@@ -101,7 +101,28 @@ func sanitizeMessageContent(content any, supportsImages bool, manifest *Manifest
 	return cleaned
 }
 
+// 上游 chat/completions 只认 system/user/assistant/tool: 不认 developer 角色,
+// 且要求首条消息为 system (否则 11128, 含 "first message is not system prompt" 形态)。
+// 宿主 v8.0.61 起 (00b76771) responses→chat 不再把 developer 降级为 user, 这里补齐映射:
+// developer 原位改为 system (magpie 已验证做法), 无 system/developer 开头时注入占位 system。
+func normalizeSystemFirst(messages []chatMessage) []chatMessage {
+	hasLeadSystem := false
+	for i := range messages {
+		if messages[i].Role == "developer" {
+			messages[i].Role = "system"
+		}
+		if i == 0 && messages[i].Role == "system" {
+			hasLeadSystem = true
+		}
+	}
+	if !hasLeadSystem && len(messages) > 0 && messages[0].Role != "system" {
+		messages = append([]chatMessage{{Role: "system", Content: "You are a helpful assistant."}}, messages...)
+	}
+	return messages
+}
+
 func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *ManifestV2) []chatMessage {
+	rawMessages = normalizeSystemFirst(rawMessages)
 	var cleaned []chatMessage
 	droppedToolCallIDs := make(map[string]struct{})
 
