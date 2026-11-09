@@ -76,6 +76,8 @@ go run scripts/dev-sandbox.go -plugin workbuddy -plugin qwenworkcn -checks load,
 ```
 
 - 就绪判据: 输出包含 `[+] 沙箱验证通过` 与断言提示, 宿主默认监听 `18317`
+- **宿主版本必须与生产对齐** (2026-11-09 教训): 脚本默认用缓存宿主 (`~/.cache/cpa-plugins/host/v<SDK>/`), 它跟的是插件 go.mod 的 SDK 版本, 不是生产宿主的运行版本。生产宿主升级后 (如 v8.0.4 → v8.0.61) 缓存宿主仍按 SDK 版本解析, 同一插件同一请求在生产与沙箱可能行为不同 (11128 排查时被它误导过: 沙箱复现不了生产故障, 根因是宿主转换层版本差)。改宿主相关行为前, 先查生产版本 (`management-api.go -base <prod> ...` 的 `[host] X-CPA-VERSION` 头), 再用 `CPA_HOST_BIN=<该版本构建>` 或 `--host-src` checkout 到该 tag 重建沙箱
+- 不用 docker 镜像替代本地构建 (评估过): 插件是 CGO c-shared, 交叉编译 linux/arm64 需目标平台 C 工具链 (release.go 也只支持当前平台打包); `eceasy/cli-proxy-api` 镜像里的宿主是 linux ELF, macOS 跑不了; 容器跑宿主又要求插件 .so 进容器, 绕不开交叉编译。加速的正确方向是预构建目标版本宿主进缓存, 而不是换运行方式
 - 启动前要求 18317 空闲: 脚本会预检, 被占用直接报错退出 (宿主先打「就绪」日志再 bind, 不预检就会拿别人的实例做断言); 遇到报错按 Cleanup 第 1 条找并杀掉占用者
 - 需要保留宿主进程时传 `-keep`, 脚本退出时输出宿主 pid 与端口
 - 沙箱宿主不依赖凭据即可驱动 `/v1/models` 等接口, 真实对话与额度需要注入凭据 (见 features/auth.md)。沙箱目录每次启动都会重建, 凭据**必须在宿主就绪之后**注入 (启动前放进去的会被清掉, 症状是列表为空且对话 503 `auth_not_found`)
@@ -98,6 +100,7 @@ go run scripts/management-api.go -path /v0/management/plugins -token-file ~/.cac
 判据:
 
 - `HTTP 200` 且返回插件 JSON 列表
+- **本地沙箱驱动前, 版本核对**: 沙箱宿主 `[host] X-CPA-VERSION` 报 `dev` (源码构建), 无法从响应头区分版本 — 以启动脚本的「目标宿主 SDK v<ver>」行与生产 `X-CPA-VERSION` 对照; 涉及宿主行为 (协议转换、错误分类) 的验收, 两者必须一致
 - 目标插件 `registered` 与 `enabled` 与 `effective_enabled` 均为 `true`
 - 宿主版本从响应头 `X-CPA-VERSION` 读取 (本地沙箱宿主由源码构建, 报 `dev`); 插件依赖 v8 SDK, 宿主须为 v8
 
