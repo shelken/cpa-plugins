@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "历史 assistant 消息的 reasoning_content 上游不读 (实测丢弃), 换成官方客户端的 reasoning 字段回传"}

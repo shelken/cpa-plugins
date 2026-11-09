@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "max_tokens<=1024 不注入默认 reasoning_effort (小预算全烧思考, magpie #643/#644 同款); max_completion_tokens 映射为 max_tokens (上游只认后者)"}
