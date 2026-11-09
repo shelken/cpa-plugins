@@ -33,7 +33,7 @@ func TestSmallBudgetSkipsDefaultEffort(t *testing.T) {
 
 	build := func(t *testing.T, raw string) map[string]any {
 		t.Helper()
-		body, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true)
+		body, _, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true)
 		if err != nil {
 			t.Fatalf("prepareChatRequestBody: %v", err)
 		}
@@ -81,7 +81,7 @@ func TestMaxCompletionTokensMapped(t *testing.T) {
 	}
 	cfg := mustParseConfig(t, nil)
 
-	body, err := prepareChatRequestBody(cfg, []byte(`{"model":"workbuddy/hy3","max_completion_tokens":256,"messages":[{"role":"user","content":"hi"}]}`), manifest, profile, true)
+	body, _, err := prepareChatRequestBody(cfg, []byte(`{"model":"workbuddy/hy3","max_completion_tokens":256,"messages":[{"role":"user","content":"hi"}]}`), manifest, profile, true)
 	if err != nil {
 		t.Fatalf("prepareChatRequestBody: %v", err)
 	}
@@ -94,6 +94,50 @@ func TestMaxCompletionTokensMapped(t *testing.T) {
 	}
 	if _, has := out["max_completion_tokens"]; has {
 		t.Errorf("max_completion_tokens 不应出现在上游请求体")
+	}
+}
+
+// 上游 chat/completions 不认 developer 角色 (宿主 v8.0.61 起保留 developer 透传, 11128),
+// 插件自己把 developer 原位映射为 system, 保证首条 system (magpie 已验证做法)。
+func TestCleanMessagesDeveloperRole(t *testing.T) {
+	manifest := &ManifestV2{}
+
+	cleaned := cleanMessages([]chatMessage{
+		{Role: "developer", Content: "main system prompt"},
+		{Role: "user", Content: "hi"},
+		{Role: "developer", Content: "mid-session instruction"},
+		{Role: "user", Content: "continue"},
+	}, true, manifest)
+
+	if cleaned[0].Role != "system" {
+		t.Errorf("expected first developer mapped to system, got %s", cleaned[0].Role)
+	}
+	if cleaned[2].Role != "system" {
+		t.Errorf("expected mid-session developer mapped to system, got %s", cleaned[2].Role)
+	}
+	if cleaned[0].Content != "main system prompt" || cleaned[2].Content != "mid-session instruction" {
+		t.Errorf("developer content must survive unchanged")
+	}
+	// 顺序不动: developer 与 user 的相对位置保留
+	if cleaned[1].Role != "user" || cleaned[3].Role != "user" {
+		t.Errorf("user positions must be preserved")
+	}
+}
+
+// 兜底: 无 system/developer 开头的会话补一条 system, 上游要求首条 system (11128 first message is not system prompt)。
+func TestCleanMessagesFirstSystemGuarantee(t *testing.T) {
+	manifest := &ManifestV2{}
+
+	cleaned := cleanMessages([]chatMessage{
+		{Role: "user", Content: "hi"},
+	}, true, manifest)
+
+	if cleaned[0].Role != "system" {
+		t.Errorf("expected injected system first, got %s", cleaned[0].Role)
+	}
+	if len(cleaned) != 2 || cleaned[1].Role != "user" || cleaned[1].Content != "hi" {
+		t.Errorf("original user message must remain after injected system")
+
 	}
 }
 
@@ -149,6 +193,12 @@ func TestCleanMessages(t *testing.T) {
 	}
 
 	cleaned := cleanMessages(messages, false, manifest)
+
+	// normalizeSystemFirst 给无 system 开头的会话注入了占位 system, 原消息后移一位
+	if cleaned[0].Role != "system" {
+		t.Errorf("expected injected system first, got %s", cleaned[0].Role)
+	}
+	cleaned = cleaned[1:]
 
 	// Message 0 should be sanitized user message
 	if cleaned[0].Content != "Hello CodeBuddy!" {
@@ -402,7 +452,7 @@ func TestPrepareChatRequestBodyProfileDifferences(t *testing.T) {
 	}`)
 
 	desktopProf := manifest.Profiles["desktop"]
-	desktopBody, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &desktopProf, true)
+	desktopBody, _, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &desktopProf, true)
 	if err != nil {
 		t.Fatalf("desktop prepare failed: %v", err)
 	}
@@ -425,7 +475,7 @@ func TestPrepareChatRequestBodyProfileDifferences(t *testing.T) {
 	}
 
 	cliProf := manifest.Profiles["cli"]
-	cliBody, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &cliProf, true)
+	cliBody, _, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &cliProf, true)
 	if err != nil {
 		t.Fatalf("cli prepare failed: %v", err)
 	}
@@ -467,7 +517,7 @@ func TestPrepareChatRequestBodyStripsModelPrefix(t *testing.T) {
 	}
 	reqPayload := []byte(`{"model": "workbuddy/hy3", "messages": [{"role": "user", "content": "hi"}]}`)
 
-	body, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &ProfileConfig{}, true)
+	body, _, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &ProfileConfig{}, true)
 	if err != nil {
 		t.Fatalf("prepare failed: %v", err)
 	}
@@ -631,7 +681,7 @@ func TestReasoningEffortPassthrough(t *testing.T) {
 				raw := fmt.Sprintf(
 					`{"model":"workbuddy/%s","messages":[{"role":"user","content":"hi"}],"reasoning_effort":%q}`,
 					model.ID, want)
-				body, err := prepareChatRequestBody(cfg, []byte(raw), m, &ProfileConfig{}, true)
+				body, _, err := prepareChatRequestBody(cfg, []byte(raw), m, &ProfileConfig{}, true)
 				if err != nil {
 					t.Fatalf("prepareChatRequestBody: %v", err)
 				}
@@ -675,7 +725,7 @@ func TestUserMessageFieldsInjected(t *testing.T) {
 		`{"role":"user","content":"第一轮"},` +
 		`{"role":"assistant","content":"答"},` +
 		`{"role":"user","content":"第二轮"}]}`
-	body, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true)
+	body, _, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true)
 	if err != nil {
 		t.Fatalf("prepareChatRequestBody: %v", err)
 	}
@@ -758,7 +808,7 @@ func TestHeaderAndBodyConversationRequestIDMatch(t *testing.T) {
 		t.Fatalf("resolveValues: %v", err)
 	}
 
-	body, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true, values)
+	body, _, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true, values)
 	if err != nil {
 		t.Fatalf("prepareChatRequestBody: %v", err)
 	}
@@ -774,7 +824,18 @@ func TestHeaderAndBodyConversationRequestIDMatch(t *testing.T) {
 		t.Fatalf("unmarshal body: %v", err)
 	}
 
-	bodyConvID, _ := out.Messages[0]["conversationRequestId"].(string)
+	// normalizeSystemFirst 会给无 system 开头的会话注入占位 system, user 消息后移一位
+	var userIDx = -1
+	for i, m := range out.Messages {
+		if m["role"] == "user" {
+			userIDx = i
+			break
+		}
+	}
+	if userIDx < 0 {
+		t.Fatalf("找不到 user 消息")
+	}
+	bodyConvID, _ := out.Messages[userIDx]["conversationRequestId"].(string)
 	headerConvID := headers.Get("X-Conversation-Request-ID")
 
 	if bodyConvID == "" || headerConvID == "" {

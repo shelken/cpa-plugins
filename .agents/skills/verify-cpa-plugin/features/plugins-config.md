@@ -39,7 +39,7 @@
 Preconditions:
 
 - 宿主服务正常运行, 管理面接口可达
-- 生产实例经 `sec-run` 取密钥; 沙箱经 `-token-file` 取密钥
+- 生产实例读缓存文件 `/tmp/cpa-plugins-cpa-token` 取密钥; 沙箱经 `-token-file` 取密钥
 
 - **查询插件状态。** 确认装载与启用状态:
   ```bash
@@ -64,4 +64,4 @@ Preconditions:
 
 - 页面提示「该插件没有声明可视化配置字段」或 `registered` 为 `false` -> 按顺序排查: 宿主全局插件开关与 `effective_enabled`; 宿主配置 `plugins.configs.<id>` 是否存在且 `enabled` 为 `true`; 宿主日志里该插件的装载/注册错误 (动态库装载失败、注册失败、元数据无效都会让它不注册); 前面都正常而 `config_fields` 仍为空, 才怀疑宿主跑的产物版本早于声明 `ConfigFields` 的提交, 须升版本重新出包
 - 用 `PUT {"enabled":true}` 启用插件后身份档、前缀等配置全部恢复默认 -> PUT 是整体替换, 改用 PATCH 或带完整原对象 PUT
-- 配置文件里的明文密钥被替换成 bcrypt 哈希 -> 宿主预期防护行为, 真实明文经 `sec-run printenv CPA_TOKEN` 提取
+- 配置文件里的明文密钥被替换成 bcrypt 哈希 -> 宿主预期防护行为, 真实明文经密钥缓存文件 `/tmp/cpa-plugins-cpa-token` 对应的管理面提取

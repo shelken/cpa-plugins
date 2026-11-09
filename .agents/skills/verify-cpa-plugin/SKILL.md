@@ -76,6 +76,8 @@ go run scripts/dev-sandbox.go -plugin workbuddy -plugin qwenworkcn -checks load,
 ```
 
 - 就绪判据: 输出包含 `[+] 沙箱验证通过` 与断言提示, 宿主默认监听 `18317`
+- **宿主版本必须与生产对齐** (2026-11-09 教训): 脚本默认用缓存宿主 (`~/.cache/cpa-plugins/host/v<SDK>/`), 它跟的是插件 go.mod 的 SDK 版本, 不是生产宿主的运行版本。生产宿主升级后 (如 v8.0.4 → v8.0.61) 缓存宿主仍按 SDK 版本解析, 同一插件同一请求在生产与沙箱可能行为不同 (11128 排查时被它误导过: 沙箱复现不了生产故障, 根因是宿主转换层版本差)。改宿主相关行为前, 先查生产版本 (`management-api.go -base <prod> ...` 的 `[host] X-CPA-VERSION` 头), 再用 `CPA_HOST_BIN=<该版本构建>` 或 `--host-src` checkout 到该 tag 重建沙箱
+- 不用 docker 镜像替代本地构建 (评估过): 插件是 CGO c-shared, 交叉编译 linux/arm64 需目标平台 C 工具链 (release.go 也只支持当前平台打包); `eceasy/cli-proxy-api` 镜像里的宿主是 linux ELF, macOS 跑不了; 容器跑宿主又要求插件 .so 进容器, 绕不开交叉编译。加速的正确方向是预构建目标版本宿主进缓存, 而不是换运行方式
 - 启动前要求 18317 空闲: 脚本会预检, 被占用直接报错退出 (宿主先打「就绪」日志再 bind, 不预检就会拿别人的实例做断言); 遇到报错按 Cleanup 第 1 条找并杀掉占用者
 - 需要保留宿主进程时传 `-keep`, 脚本退出时输出宿主 pid 与端口
 - 沙箱宿主不依赖凭据即可驱动 `/v1/models` 等接口, 真实对话与额度需要注入凭据 (见 features/auth.md)。沙箱目录每次启动都会重建, 凭据**必须在宿主就绪之后**注入 (启动前放进去的会被清掉, 症状是列表为空且对话 503 `auth_not_found`)
@@ -88,7 +90,7 @@ go run scripts/dev-sandbox.go -plugin workbuddy -plugin qwenworkcn -checks load,
 对目标实例执行单次只读探测, 回答「这个实例值得驱动吗」。任何异常先跑这个:
 
 ```bash
-# 生产实例 (仅用户要求时, 只读): 密钥经 sec-run 就地取得
+# 生产实例 (仅用户要求时, 只读): 密钥读缓存文件 /tmp/cpa-plugins-cpa-token (缺失时先执行一次 sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token && chmod 600 /tmp/cpa-plugins-cpa-token)
 go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins | jq -c '.plugins[] | {id, registered, enabled, effective_enabled, supports_quota, config_fields}'
 
 # 本地沙箱: 管理密钥每次启动随机生成, 只能从沙箱目录读
@@ -98,12 +100,13 @@ go run scripts/management-api.go -path /v0/management/plugins -token-file ~/.cac
 判据:
 
 - `HTTP 200` 且返回插件 JSON 列表
+- **本地沙箱驱动前, 版本核对**: 沙箱宿主 `[host] X-CPA-VERSION` 报 `dev` (源码构建), 无法从响应头区分版本 — 以启动脚本的「目标宿主 SDK v<ver>」行与生产 `X-CPA-VERSION` 对照; 涉及宿主行为 (协议转换、错误分类) 的验收, 两者必须一致
 - 目标插件 `registered` 与 `enabled` 与 `effective_enabled` 均为 `true`
 - 宿主版本从响应头 `X-CPA-VERSION` 读取 (本地沙箱宿主由源码构建, 报 `dev`); 插件依赖 v8 SDK, 宿主须为 v8
 
 ## Drive
 
-统一经仓库脚本驱动, 管理密钥默认由 `sec-run` 就地注入 `CPA_TOKEN`:
+统一经仓库脚本驱动, 管理密钥读密钥缓存文件 `/tmp/cpa-plugins-cpa-token` (用户预先执行一次 `sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token && chmod 600 /tmp/cpa-plugins-cpa-token` 落盘; 脚本不再调 sec-run, 每次弹 1Password 无人值守必卡死):
 
 ```bash
 # 读取插件列表与装载状态
@@ -135,10 +138,10 @@ go run scripts/verify-chat.go -list    # 列出场景与请求成本
 
 密钥只在进程内流转:
 
-- 管理密钥只经 `sec-run printenv CPA_TOKEN` 隐式读取, 不落环境变量文件, 不出现在命令行与终端输出
+- 管理密钥从缓存文件 `/tmp/cpa-plugins-cpa-token` 读取 (0600, 用户预先执行一次 `sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token && chmod 600 /tmp/cpa-plugins-cpa-token` 落盘), 脚本自身不调 sec-run; 密钥不落环境变量文件, 不出现在命令行与终端输出; 缓存文件失效 (轮换后 401) 时重新执行同一条命令刷新
 - 客户端密钥由脚本就地取自管理面 (`scripts/verify-chat.go` 与 `management-api.go -auth client` 都这样做), 只进请求头
 - 直连 `/v1` 的探测用 `-auth client`, 不要手抄密钥拼 `curl -H "Authorization: Bearer ..."`
-- 沙箱是唯一例外: 沙箱管理密钥每次 `dev-sandbox.go -keep` 随机生成, sec-run 里的 `CPA_TOKEN` 是生产密钥, 两者必然不同。驱动沙箱管理面一律 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key` (含 `verify-chat.go`), 密钥值不回显
+- 沙箱是唯一例外: 沙箱管理密钥每次 `dev-sandbox.go -keep` 随机生成, `/tmp/cpa-plugins-cpa-token` 里的是生产密钥, 两者必然不同。驱动沙箱管理面一律 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key` (含 `verify-chat.go`), 密钥值不回显
 - 管理面响应里的密钥与凭据字段默认打码, 判断「是哪一条、换没换」看 `<redacted len=.. sha256=..>` 的长度与前 4 字节哈希
 - 失败信息不带取值: 脚本出错时只回显 URL 与状态码
 
@@ -175,7 +178,7 @@ go run scripts/verify-chat.go -list    # 列出场景与请求成本
 
 ## Helpers
 
-- `scripts/management-api.go`: 管理面单点交互工具, 默认由 `sec-run` 注入 `CPA_TOKEN` 鉴权, 沙箱场景用 `-token-file` 读沙箱密钥, 响应里的密钥与凭据字段默认打码; `-auth client` 时改为按客户端身份访问 `/v1`, 客户端密钥由进程自己从管理面取; `-body-file` 从文件读请求体, 用于凭据上传
+- `scripts/management-api.go`: 管理面单点交互工具, 默认读密钥缓存文件 `/tmp/cpa-plugins-cpa-token` 鉴权, 沙箱场景用 `-token-file` 读沙箱密钥, 响应里的密钥与凭据字段默认打码; `-auth client` 时改为按客户端身份访问 `/v1`, 客户端密钥由进程自己从管理面取; `-body-file` 从文件读请求体, 用于凭据上传
 - `scripts/verify-chat.go`: 对话链路验收入口, `-scenarios` 选场景 (`-list` 打印清单); 判据项见 features/chat.md
 - `scripts/copy-auth.go`: 把生产凭据原样搬进沙箱 (真机对话验收的前置, 须在沙箱宿主就绪后执行); 下载与上传在同一进程内完成, 凭据不落盘不回显, 只打印文件名与字节数, 生产侧只读, 用法见 features/auth.md
 - `scripts/dev-sandbox.go`: 沙箱启动与装载断言套件, `-plugin` 可重复传参一次起多个插件, `-checks` 选断言 (`-checks list` 打印清单); 只覆盖装载与报送, 替代不了真机对话验收。启动前会检查端口空闲, 被占用直接报错而非拿陌生实例做断言
