@@ -45,7 +45,7 @@ jobs:
             extension: ".so"
           - goos: darwin
             goarch: arm64
-            runner: macos-14
+            runner: macos-15
             extension: ".dylib"
 
     steps:
