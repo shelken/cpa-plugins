@@ -20,6 +20,83 @@ var (
 	reUUID  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
 
+func TestSmallBudgetSkipsDefaultEffort(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile, err := manifest.GetProfile(string(ProfileDesktop))
+	if err != nil {
+		t.Fatalf("取 desktop 档失败: %v", err)
+	}
+	cfg := mustParseConfig(t, nil)
+
+	build := func(t *testing.T, raw string) map[string]any {
+		t.Helper()
+		body, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true)
+		if err != nil {
+			t.Fatalf("prepareChatRequestBody: %v", err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(body, &out); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		return out
+	}
+
+	// 小预算 (标题生成/分类这类短请求) 不注入默认 effort: 默认档会把整个预算烧在思考上
+	// (magpie #643/#644 实测: max_tokens 64 → reasoning 64 无正文; 本插件 max_tokens=16 探针同症)。
+	small := build(t, `{"model":"workbuddy/hy3","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
+	if _, has := small["reasoning_effort"]; has {
+		t.Errorf("max_tokens=1024 不应注入默认 reasoning_effort")
+	}
+	if small["max_tokens"] != float64(1024) {
+		t.Errorf("max_tokens 应原样保留")
+	}
+
+	// 超过阈值仍注入默认 effort
+	big := build(t, `{"model":"workbuddy/hy3","max_tokens":4096,"messages":[{"role":"user","content":"hi"}]}`)
+	if big["reasoning_effort"] == "" {
+		t.Errorf("max_tokens=4096 应注入默认 reasoning_effort")
+	}
+
+	// 客户端显式给的 effort 无论如何保留
+	named := build(t, `{"model":"workbuddy/hy3","max_tokens":64,"reasoning_effort":"low","messages":[{"role":"user","content":"hi"}]}`)
+	if named["reasoning_effort"] != "low" {
+		t.Errorf("显式 effort 应保留, got %v", named["reasoning_effort"])
+	}
+}
+
+// 宿主只在 Responses 协议下把 max_output_tokens 转 max_tokens; Chat Completions 直入路径的
+// max_completion_tokens 原样透传, 上游只认 max_tokens (实测: max_completion_tokens=6 输出 53 tokens,
+// 同请求 max_tokens=6 输出 6)。
+func TestMaxCompletionTokensMapped(t *testing.T) {
+	manifest, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("解析内嵌清单失败: %v", err)
+	}
+	profile, err := manifest.GetProfile(string(ProfileDesktop))
+	if err != nil {
+		t.Fatalf("取 desktop 档失败: %v", err)
+	}
+	cfg := mustParseConfig(t, nil)
+
+	body, err := prepareChatRequestBody(cfg, []byte(`{"model":"workbuddy/hy3","max_completion_tokens":256,"messages":[{"role":"user","content":"hi"}]}`), manifest, profile, true)
+	if err != nil {
+		t.Fatalf("prepareChatRequestBody: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if out["max_tokens"] != float64(256) {
+		t.Errorf("max_completion_tokens 应映射为 max_tokens=256, got %v", out["max_tokens"])
+	}
+	if _, has := out["max_completion_tokens"]; has {
+		t.Errorf("max_completion_tokens 不应出现在上游请求体")
+	}
+}
+
 func TestCleanMessages(t *testing.T) {
 	manifest := &ManifestV2{
 		Sanitizations: []SanitizationRule{

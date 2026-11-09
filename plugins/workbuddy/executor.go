@@ -35,20 +35,21 @@ type chatMessage struct {
 }
 
 type chatCompletionRequest struct {
-	Model             string        `json:"model"`
-	Messages          []chatMessage `json:"messages"`
-	Stream            bool          `json:"stream,omitempty"`
-	StreamOptions     any           `json:"stream_options,omitempty"`
-	Temperature       *float64      `json:"temperature,omitempty"`
-	MaxTokens         *int          `json:"max_tokens,omitempty"`
-	Tools             []any         `json:"tools,omitempty"`
-	ToolChoice        any           `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool         `json:"parallel_tool_calls,omitempty"`
-	ReasoningEffort   string        `json:"reasoning_effort,omitempty"`
-	ReasoningSummary  string        `json:"reasoning_summary,omitempty"`
-	Verbosity         string        `json:"verbosity,omitempty"`
-	Store             *bool         `json:"store,omitempty"`
-	ExtraVars         any           `json:"extra_vars,omitempty"`
+	Model               string        `json:"model"`
+	Messages            []chatMessage `json:"messages"`
+	Stream              bool          `json:"stream,omitempty"`
+	StreamOptions       any           `json:"stream_options,omitempty"`
+	Temperature         *float64      `json:"temperature,omitempty"`
+	MaxTokens           *int          `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int          `json:"max_completion_tokens,omitempty"`
+	Tools               []any         `json:"tools,omitempty"`
+	ToolChoice          any           `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool         `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort     string        `json:"reasoning_effort,omitempty"`
+	ReasoningSummary    string        `json:"reasoning_summary,omitempty"`
+	Verbosity           string        `json:"verbosity,omitempty"`
+	Store               *bool         `json:"store,omitempty"`
+	ExtraVars           any           `json:"extra_vars,omitempty"`
 }
 
 func sanitizeMessageContent(content any, supportsImages bool, manifest *ManifestV2) any {
@@ -275,6 +276,8 @@ func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *Mani
 	}
 	if inReq.MaxTokens != nil {
 		outMap["max_tokens"] = *inReq.MaxTokens
+	} else if inReq.MaxCompletionTokens != nil {
+		outMap["max_tokens"] = *inReq.MaxCompletionTokens
 	}
 	if len(inReq.Tools) > 0 {
 		outMap["tools"] = inReq.Tools
@@ -291,8 +294,23 @@ func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *Mani
 		if effort == "" {
 			effort = defaultEffort
 		}
-		outMap["reasoning_effort"] = effort
-		outMap["reasoning_summary"] = "auto"
+		// 小预算请求 (标题生成/分类这类短 ask) 不注入默认 effort: 默认档会把整个预算
+		// 烧在思考上 (magpie #643/#644 实测; SMALL_BUDGET 取 Anthropic thinking 的
+		// 最低预算, 超过它才可能是有意的思考请求)。客户端显式给的 effort 不受影响。
+		const smallBudget = 1024
+		limit := 0
+		if inReq.MaxTokens != nil {
+			limit = *inReq.MaxTokens
+		} else if inReq.MaxCompletionTokens != nil {
+			limit = *inReq.MaxCompletionTokens
+		}
+		if effort == defaultEffort && inReq.ReasoningEffort == "" && limit > 0 && limit <= smallBudget {
+			effort = ""
+		}
+		if effort != "" {
+			outMap["reasoning_effort"] = effort
+			outMap["reasoning_summary"] = "auto"
+		}
 	}
 
 	for k, v := range profile.Body.Set {
