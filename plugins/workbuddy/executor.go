@@ -101,6 +101,26 @@ func sanitizeMessageContent(content any, supportsImages bool, manifest *Manifest
 	return cleaned
 }
 
+// 上游丢弃 assistant 消息里的 reasoning_content 字段 (沙箱 codeword 实验: content 里的
+// 暗号能复述, reasoning_content 里的看不到); 官方客户端回传历史思考用 reasoning 字段
+// (magpie #291 同款实测: reasoning_content 里的词到不了模型, reasoning 能到)。
+// cleanMessages 末尾把历史 reasoning_content 换名为 reasoning。
+func historyReasoningField(messages []chatMessage) {
+	for i := range messages {
+		if messages[i].Role != "assistant" || messages[i].ReasoningContent == "" {
+			continue
+		}
+		if messages[i].Extra == nil {
+			messages[i].Extra = map[string]any{}
+		}
+		// 已有 reasoning 字段 (宿主或客户端显式给的) 优先
+		if _, exists := messages[i].Extra["reasoning"]; !exists {
+			messages[i].Extra["reasoning"] = messages[i].ReasoningContent
+		}
+		messages[i].ReasoningContent = ""
+	}
+}
+
 func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *ManifestV2) []chatMessage {
 	var cleaned []chatMessage
 	droppedToolCallIDs := make(map[string]struct{})
@@ -181,6 +201,8 @@ func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *Man
 			}
 		}
 	}
+
+	historyReasoningField(finalMessages)
 
 	return finalMessages
 }
