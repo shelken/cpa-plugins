@@ -374,7 +374,7 @@ func TestPrepareChatRequestBodyProfileDifferences(t *testing.T) {
 	}`)
 
 	desktopProf := manifest.Profiles["desktop"]
-	desktopBody, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &desktopProf, true)
+	desktopBody, _, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &desktopProf, true)
 	if err != nil {
 		t.Fatalf("desktop prepare failed: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestPrepareChatRequestBodyProfileDifferences(t *testing.T) {
 	}
 
 	cliProf := manifest.Profiles["cli"]
-	cliBody, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &cliProf, true)
+	cliBody, _, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &cliProf, true)
 	if err != nil {
 		t.Fatalf("cli prepare failed: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestPrepareChatRequestBodyStripsModelPrefix(t *testing.T) {
 	}
 	reqPayload := []byte(`{"model": "workbuddy/hy3", "messages": [{"role": "user", "content": "hi"}]}`)
 
-	body, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &ProfileConfig{}, true)
+	body, _, err := prepareChatRequestBody(mustParseConfig(t, nil), reqPayload, manifest, &ProfileConfig{}, true)
 	if err != nil {
 		t.Fatalf("prepare failed: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestReasoningEffortPassthrough(t *testing.T) {
 				raw := fmt.Sprintf(
 					`{"model":"workbuddy/%s","messages":[{"role":"user","content":"hi"}],"reasoning_effort":%q}`,
 					model.ID, want)
-				body, err := prepareChatRequestBody(cfg, []byte(raw), m, &ProfileConfig{}, true)
+				body, _, err := prepareChatRequestBody(cfg, []byte(raw), m, &ProfileConfig{}, true)
 				if err != nil {
 					t.Fatalf("prepareChatRequestBody: %v", err)
 				}
@@ -647,7 +647,7 @@ func TestUserMessageFieldsInjected(t *testing.T) {
 		`{"role":"user","content":"第一轮"},` +
 		`{"role":"assistant","content":"答"},` +
 		`{"role":"user","content":"第二轮"}]}`
-	body, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true)
+	body, _, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true)
 	if err != nil {
 		t.Fatalf("prepareChatRequestBody: %v", err)
 	}
@@ -730,7 +730,7 @@ func TestHeaderAndBodyConversationRequestIDMatch(t *testing.T) {
 		t.Fatalf("resolveValues: %v", err)
 	}
 
-	body, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true, values)
+	body, _, err := prepareChatRequestBody(cfg, []byte(raw), manifest, profile, true, values)
 	if err != nil {
 		t.Fatalf("prepareChatRequestBody: %v", err)
 	}
