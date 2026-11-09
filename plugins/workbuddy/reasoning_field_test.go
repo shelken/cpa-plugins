@@ -73,7 +73,11 @@ func TestHistoryReasoningFieldOnlyAssistant(t *testing.T) {
 		{Role: "user", Content: "hi", ReasoningContent: "should-stay"},
 	}, true, manifest)
 
-	if cleaned[0].ReasoningContent != "should-stay" {
-		t.Errorf("非 assistant 消息的 reasoning_content 不应被动, got %q", cleaned[0].ReasoningContent)
+	// normalizeSystemFirst 给无 system 开头的会话注入了占位 system, user 后移一位
+	if cleaned[0].Role != "system" {
+		t.Fatalf("expected injected system first, got %s", cleaned[0].Role)
+	}
+	if cleaned[1].ReasoningContent != "should-stay" {
+		t.Errorf("非 assistant 消息的 reasoning_content 不应被动, got %q", cleaned[1].ReasoningContent)
 	}
 }

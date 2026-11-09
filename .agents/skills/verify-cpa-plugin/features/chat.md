@@ -73,7 +73,7 @@ Preconditions:
 
 - 实例经 Doctor 确认可用, 插件 `registered` 且 `enabled`
 - 真实对话需要可用凭据 (`auth-files` 中目标渠道 `status` 为 `active`); 凭据可用性先于一切链路判断 (postmortems/003)
-- 密钥: 生产经 `sec-run`, 沙箱经 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key`
+- 密钥: 生产读缓存文件 `/tmp/cpa-plugins-cpa-token`, 沙箱经 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key`
 
 - **按场景跑判据。** 脚本只执行点名的场景, 未点名的判据不执行也不报绿, 退出码 1 表示有失败项:
   ```bash
