@@ -103,6 +103,26 @@ func sanitizeMessageContent(content any, supportsImages bool, manifest *Manifest
 	return cleaned
 }
 
+// 上游丢弃 assistant 消息里的 reasoning_content 字段 (沙箱 codeword 实验: content 里的
+// 暗号能复述, reasoning_content 里的看不到); 官方客户端回传历史思考用 reasoning 字段
+// (magpie #291 同款实测: reasoning_content 里的词到不了模型, reasoning 能到)。
+// cleanMessages 末尾把历史 reasoning_content 换名为 reasoning。
+func historyReasoningField(messages []chatMessage) {
+	for i := range messages {
+		if messages[i].Role != "assistant" || messages[i].ReasoningContent == "" {
+			continue
+		}
+		if messages[i].Extra == nil {
+			messages[i].Extra = map[string]any{}
+		}
+		// 已有 reasoning 字段 (宿主或客户端显式给的) 优先
+		if _, exists := messages[i].Extra["reasoning"]; !exists {
+			messages[i].Extra["reasoning"] = messages[i].ReasoningContent
+		}
+		messages[i].ReasoningContent = ""
+	}
+}
+
 // 上游 chat/completions 只认 system/user/assistant/tool: 不认 developer 角色,
 // 且要求首条消息为 system (否则 11128, 含 "first message is not system prompt" 形态)。
 // 宿主 v8.0.61 起 (00b76771) responses→chat 不再把 developer 降级为 user, 这里补齐映射:
@@ -121,6 +141,7 @@ func normalizeSystemFirst(messages []chatMessage) []chatMessage {
 		messages = append([]chatMessage{{Role: "system", Content: "You are a helpful assistant."}}, messages...)
 	}
 	return messages
+
 }
 
 func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *ManifestV2) []chatMessage {
@@ -204,6 +225,8 @@ func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *Man
 			}
 		}
 	}
+
+	historyReasoningField(finalMessages)
 
 	return finalMessages
 }
