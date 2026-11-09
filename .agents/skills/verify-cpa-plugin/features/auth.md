@@ -48,7 +48,7 @@ Preconditions:
   go run scripts/copy-auth.go -from https://<prod-host> \
     -token-file ~/.cache/cpa-plugins/sandbox/<ids>/management-key <file.json> [<file2.json> ...]
   ```
-  生产密钥经 `sec-run` 隐式读取, 生产侧只做 GET。搬完按上一条再查一次沙箱 `auth-files`, 判据同样是 `provider` 与 `status` 为 `active`; 文件名取自生产 `auth-files` 的 `name` 字段
+  生产密钥读缓存文件 `/tmp/cpa-plugins-cpa-token` (缺失时先执行一次 `sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token && chmod 600 /tmp/cpa-plugins-cpa-token`), 生产侧只做 GET。搬完按上一条再查一次沙箱 `auth-files`, 判据同样是 `provider` 与 `status` 为 `active`; 文件名取自生产 `auth-files` 的 `name` 字段
 
 ## Gotchas
 

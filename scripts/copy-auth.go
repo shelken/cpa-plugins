@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -19,8 +18,13 @@ import (
 //	  -token-file ~/.cache/cpa-plugins/sandbox/<ids>/management-key <file.json> [<file2.json> ...]
 //
 // 管理面任何回显通道都会把凭据打码, 打码值上线即 401, 所以下载与上传必须在同一进程里完成:
-// 凭据只在内存里流转, 不落盘不回显, 只打印文件名与字节数。生产密钥经 sec-run 隐式读取,
+// 凭据只在内存里流转, 不落盘不回显, 只打印文件名与字节数。生产密钥读密钥缓存文件
+// /tmp/cpa-plugins-cpa-token (用户预先执行一次 `sec-run printenv CPA_TOKEN > /tmp/... &&
+// chmod 600 /tmp/...` 落盘; 脚本不再调 sec-run, 避免每次弹 1Password, 无人值守必卡死),
 // 沙箱密钥读 -token-file; 生产侧只做 GET, 写操作只落沙箱。
+
+const tokenCachePath = "/tmp/cpa-plugins-cpa-token"
+
 func main() {
 	from := flag.String("from", "", "生产宿主地址 (只读下载凭据)")
 	to := flag.String("to", "http://127.0.0.1:18317", "沙箱宿主地址 (上传凭据)")
@@ -31,11 +35,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	prodToken, err := exec.Command("sec-run", "printenv", "CPA_TOKEN").Output()
-	if err != nil || len(bytes.TrimSpace(prodToken)) == 0 {
-		fmt.Fprintln(os.Stderr, "[-] 未能经 sec-run 读取生产管理密钥, 不发请求")
+	rawToken, err := os.ReadFile(tokenCachePath)
+	if err != nil || len(bytes.TrimSpace(rawToken)) == 0 {
+		fmt.Fprintf(os.Stderr, "[-] 密钥缓存 %s 不可读或为空, 不发请求 (先执行一次: sec-run printenv CPA_TOKEN > %s && chmod 600 %s)\n", tokenCachePath, tokenCachePath, tokenCachePath)
 		os.Exit(3)
 	}
+	prodToken := bytes.TrimSpace(rawToken)
 	sandboxToken, err := os.ReadFile(*tokenFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] 读取 token-file 失败: %v\n", err)

@@ -90,7 +90,7 @@ go run scripts/dev-sandbox.go -plugin workbuddy -plugin qwenworkcn -checks load,
 对目标实例执行单次只读探测, 回答「这个实例值得驱动吗」。任何异常先跑这个:
 
 ```bash
-# 生产实例 (仅用户要求时, 只读): 密钥经 sec-run 就地取得
+# 生产实例 (仅用户要求时, 只读): 密钥读缓存文件 /tmp/cpa-plugins-cpa-token (缺失时先执行一次 sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token && chmod 600 /tmp/cpa-plugins-cpa-token)
 go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/plugins | jq -c '.plugins[] | {id, registered, enabled, effective_enabled, supports_quota, config_fields}'
 
 # 本地沙箱: 管理密钥每次启动随机生成, 只能从沙箱目录读
@@ -106,7 +106,7 @@ go run scripts/management-api.go -path /v0/management/plugins -token-file ~/.cac
 
 ## Drive
 
-统一经仓库脚本驱动, 管理密钥默认由 `sec-run` 就地注入 `CPA_TOKEN`:
+统一经仓库脚本驱动, 管理密钥读密钥缓存文件 `/tmp/cpa-plugins-cpa-token` (用户预先执行一次 `sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token && chmod 600 /tmp/cpa-plugins-cpa-token` 落盘; 脚本不再调 sec-run, 每次弹 1Password 无人值守必卡死):
 
 ```bash
 # 读取插件列表与装载状态
@@ -138,10 +138,10 @@ go run scripts/verify-chat.go -list    # 列出场景与请求成本
 
 密钥只在进程内流转:
 
-- 管理密钥只经 `sec-run printenv CPA_TOKEN` 隐式读取, 不落环境变量文件, 不出现在命令行与终端输出
+- 管理密钥从缓存文件 `/tmp/cpa-plugins-cpa-token` 读取 (0600, 用户预先执行一次 `sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token && chmod 600 /tmp/cpa-plugins-cpa-token` 落盘), 脚本自身不调 sec-run; 密钥不落环境变量文件, 不出现在命令行与终端输出; 缓存文件失效 (轮换后 401) 时重新执行同一条命令刷新
 - 客户端密钥由脚本就地取自管理面 (`scripts/verify-chat.go` 与 `management-api.go -auth client` 都这样做), 只进请求头
 - 直连 `/v1` 的探测用 `-auth client`, 不要手抄密钥拼 `curl -H "Authorization: Bearer ..."`
-- 沙箱是唯一例外: 沙箱管理密钥每次 `dev-sandbox.go -keep` 随机生成, sec-run 里的 `CPA_TOKEN` 是生产密钥, 两者必然不同。驱动沙箱管理面一律 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key` (含 `verify-chat.go`), 密钥值不回显
+- 沙箱是唯一例外: 沙箱管理密钥每次 `dev-sandbox.go -keep` 随机生成, `/tmp/cpa-plugins-cpa-token` 里的是生产密钥, 两者必然不同。驱动沙箱管理面一律 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key` (含 `verify-chat.go`), 密钥值不回显
 - 管理面响应里的密钥与凭据字段默认打码, 判断「是哪一条、换没换」看 `<redacted len=.. sha256=..>` 的长度与前 4 字节哈希
 - 失败信息不带取值: 脚本出错时只回显 URL 与状态码
 
@@ -178,7 +178,7 @@ go run scripts/verify-chat.go -list    # 列出场景与请求成本
 
 ## Helpers
 
-- `scripts/management-api.go`: 管理面单点交互工具, 默认由 `sec-run` 注入 `CPA_TOKEN` 鉴权, 沙箱场景用 `-token-file` 读沙箱密钥, 响应里的密钥与凭据字段默认打码; `-auth client` 时改为按客户端身份访问 `/v1`, 客户端密钥由进程自己从管理面取; `-body-file` 从文件读请求体, 用于凭据上传
+- `scripts/management-api.go`: 管理面单点交互工具, 默认读密钥缓存文件 `/tmp/cpa-plugins-cpa-token` 鉴权, 沙箱场景用 `-token-file` 读沙箱密钥, 响应里的密钥与凭据字段默认打码; `-auth client` 时改为按客户端身份访问 `/v1`, 客户端密钥由进程自己从管理面取; `-body-file` 从文件读请求体, 用于凭据上传
 - `scripts/verify-chat.go`: 对话链路验收入口, `-scenarios` 选场景 (`-list` 打印清单); 判据项见 features/chat.md
 - `scripts/copy-auth.go`: 把生产凭据原样搬进沙箱 (真机对话验收的前置, 须在沙箱宿主就绪后执行); 下载与上传在同一进程内完成, 凭据不落盘不回显, 只打印文件名与字节数, 生产侧只读, 用法见 features/auth.md
 - `scripts/dev-sandbox.go`: 沙箱启动与装载断言套件, `-plugin` 可重复传参一次起多个插件, `-checks` 选断言 (`-checks list` 打印清单); 只覆盖装载与报送, 替代不了真机对话验收。启动前会检查端口空闲, 被占用直接报错而非拿陌生实例做断言

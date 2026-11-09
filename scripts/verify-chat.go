@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,7 +18,7 @@ import (
 // 装载与注册归 dev-sandbox.go, 仓库不变量归 check-plugins.go, 发布产物归 verify-registry-install.go。
 // 场景以注册表声明 (scenarioRegistry), 加场景 = 写一个 run 函数 + 注册一行, main 不随场景增长。
 //
-// 密钥纪律: 管理密钥只经 sec-run printenv CPA_TOKEN 读取, 客户端密钥由管理面就地取得,
+// 密钥纪律: 管理密钥读密钥缓存文件 /tmp/cpa-plugins-cpa-token, 客户端密钥由管理面就地取得,
 // 二者都不得出现在终端输出里, 出错信息也只回显打码后的形态。
 
 const doneFrame = "[DONE]"
@@ -323,20 +322,17 @@ type verdict struct {
 	detail string
 }
 
-func secRun(name string) string {
-	out, err := exec.Command("sec-run", "printenv", name).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
+const tokenCachePath = "/tmp/cpa-plugins-cpa-token"
 
-// readManagementToken 优先读沙箱 per-run 密钥文件, 未指定时回落 sec-run 的生产密钥。
+// readManagementToken 优先读沙箱 per-run 密钥文件, 未指定时读密钥缓存文件
+// (用户预先执行一次 `sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token &&
+// chmod 600 ...` 落盘); 脚本自身不再调 sec-run (每次弹 1Password, 无人值守必卡死)。
 func readManagementToken(path string) string {
-	if strings.TrimSpace(path) == "" {
-		return secRun("CPA_TOKEN")
+	p := path
+	if strings.TrimSpace(p) == "" {
+		p = tokenCachePath
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(p)
 	if err != nil {
 		return ""
 	}
@@ -602,7 +598,7 @@ func main() {
 	manifestPath := flag.String("manifest", "", "静态模型清单路径, 默认按模型 id 的插件段推导")
 	prefixRepeats := flag.Int("prefix", 120, "长前缀段落重复次数, 用于制造可命中缓存的前缀")
 	timeout := flag.Duration("timeout", 180*time.Second, "单个请求超时")
-	tokenFile := flag.String("token-file", "", "管理密钥文件路径 (本地沙箱 per-run key), 设置时优先于 sec-run")
+	tokenFile := flag.String("token-file", "", "管理密钥文件路径 (本地沙箱 per-run key), 设置时优先于密钥缓存文件")
 	listScenarios := flag.Bool("list", false, "只打印可用场景与其请求成本, 不发请求")
 	var requested listFlag
 	flag.Var(&requested, "scenarios", "要执行的场景, 逗号分隔或重复传参; 默认 "+strings.Join(defaultScenarios, ","))
@@ -629,7 +625,7 @@ func main() {
 		if *tokenFile != "" {
 			fmt.Fprintf(os.Stderr, "[-] 读取 token-file 失败: %s\n", *tokenFile)
 		} else {
-			fmt.Fprintln(os.Stderr, "[-] 未能通过 sec-run 读取到 CPA_TOKEN, 不发任何请求")
+			fmt.Fprintf(os.Stderr, "[-] 密钥缓存 %s 不可读或为空; 先执行一次: sec-run printenv CPA_TOKEN > %s && chmod 600 %s\n", tokenCachePath, tokenCachePath, tokenCachePath)
 		}
 		os.Exit(3)
 	}

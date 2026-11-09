@@ -10,21 +10,24 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 )
 
-// 管理面单点交互工具。密钥不出现在命令行里: 管理密钥经 sec-run 隐式读取, 客户端密钥
-// 需要时由本进程从管理面就地取得, 两者都只进请求头, 响应回显默认打码。
+// 管理面单点交互工具。密钥不出现在命令行里: 管理密钥从缓存文件读取 (用户执行一次
+// `sec-run printenv CPA_TOKEN > /tmp/cpa-plugins-cpa-token && chmod 600 /tmp/...`
+// 预先落盘, 0600), 客户端密钥需要时由本进程从管理面就地取得, 两者都只进请求头,
+// 响应回显默认打码。
+const tokenCachePath = "/tmp/cpa-plugins-cpa-token"
+
 func main() {
 	base := flag.String("base", "http://127.0.0.1:18317", "目标地址")
 	path := flag.String("path", "/v0/management/plugins", "管理面路径")
 	method := flag.String("method", http.MethodGet, "请求方法")
 	body := flag.String("body", "", "请求体")
 	auth := flag.String("auth", "management", "鉴权身份: management 用管理密钥, client 用就地取得的客户端密钥")
-	tokenFile := flag.String("token-file", "", "管理密钥文件路径 (本地沙箱 per-run key), 设置时优先于 sec-run")
+	tokenFile := flag.String("token-file", "", "管理密钥文件路径 (本地沙箱 per-run key), 设置时优先于密钥缓存文件")
 	bodyFile := flag.String("body-file", "", "请求体文件路径, 设置时优先于 -body")
 	flag.Parse()
 	if *bodyFile != "" {
@@ -45,12 +48,12 @@ func main() {
 		}
 		managementToken = "Bearer " + strings.TrimSpace(string(raw))
 	} else {
-		token, err := secRun("CPA_TOKEN")
+		token, err := readCachedToken()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[-] 未能隐式读取管理密钥: %v, 不发请求\n", err)
+			fmt.Fprintf(os.Stderr, "[-] %v\n", err)
 			os.Exit(3)
 		}
-		managementToken = token
+		managementToken = "Bearer " + token
 	}
 
 	headerValue := managementToken
@@ -108,15 +111,16 @@ func main() {
 	}
 }
 
-// secRun 只经 sec-run 隐式读取密钥, 取值不落在命令行里。
-func secRun(name string) (string, error) {
-	out, err := exec.Command("sec-run", "printenv", name).Output()
+// readCachedToken 读用户预先落盘的密钥缓存 (0600); 缺失时报错并给出一次性生成命令,
+// 脚本自身不再调 sec-run (每次弹 1Password, 无人值守时必卡死)。
+func readCachedToken() (string, error) {
+	raw, err := os.ReadFile(tokenCachePath)
 	if err != nil {
-		return "", fmt.Errorf("sec-run printenv %s 执行失败", name)
+		return "", fmt.Errorf("密钥缓存 %s 不可读: %v (先执行一次: sec-run printenv CPA_TOKEN > %s && chmod 600 %s)", tokenCachePath, err, tokenCachePath, tokenCachePath)
 	}
-	value := strings.TrimSpace(string(out))
+	value := strings.TrimSpace(string(raw))
 	if value == "" {
-		return "", fmt.Errorf("sec-run 没有给出 %s", name)
+		return "", fmt.Errorf("密钥缓存 %s 为空 (重新执行: sec-run printenv CPA_TOKEN > %s)", tokenCachePath, tokenCachePath)
 	}
 	return value, nil
 }
