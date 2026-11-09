@@ -185,6 +185,281 @@ func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *Man
 	return finalMessages
 }
 
+// 上游 (kimi/deepseek 等) 的工具校验会拒绝常见 schema 形态, 400 11133/11152
+// (magpie workbuddy #122/#378 实测记录): 无类型 enum、全 object 的无类型 oneOf、
+// bool 当 schema、required 非列表、空枚举、未知类型、非法工具名。shapelfools
+// 在透传前给每个形态换成上游接受的等价形态, 不收窄不放宽调用面。
+func shapeTools(tools []any) []any {
+	if len(tools) == 0 {
+		return tools
+	}
+	taken := make(map[string]bool, len(tools))
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := tool["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		fn["name"] = safeToolName(name, taken)
+		if params, ok := fn["parameters"].(map[string]any); ok {
+			shapeSchema(params, 0)
+		}
+	}
+	return tools
+}
+
+const toolSchemaMaxDepth = 64
+
+var toolSchemaKnownTypes = map[string]bool{
+	"string": true, "number": true, "integer": true, "boolean": true,
+	"object": true, "array": true, "null": true,
+}
+
+var toolSchemaBoolOK = map[string]bool{"additionalProperties": true, "unevaluatedProperties": true}
+
+// safeToolName 把工具名里上游不收的字符 (点/冒号/空格/CJK 等, magpie 实测 11152)
+// 换成 _, 与已有名字去重。
+func safeToolName(name string, taken map[string]bool) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	base := strings.Trim(b.String(), "_")
+	if base == "" {
+		base = "tool"
+	}
+	if !taken[base] {
+		taken[base] = true
+		return base
+	}
+	for i := 2; ; i++ {
+		n := fmt.Sprintf("%s_%d", base, i)
+		if !taken[n] {
+			taken[n] = true
+			return n
+		}
+	}
+}
+
+// shapeSchema 就地修整一个 schema 位置 (属性名叫 enum/type 的不算), 递归。
+// 对 map 的每个子值递归 (string/number 等 no-op), 于是 properties 类映射的每个
+// schema 值、anyOf 类列表的每项、以及 schema 自身都会被修到。
+func shapeSchema(s any, depth int) {
+	if depth > toolSchemaMaxDepth {
+		return
+	}
+	switch v := s.(type) {
+	case []any:
+		for _, item := range v {
+			shapeSchema(item, depth+1)
+		}
+	case map[string]any:
+		// bool 当 schema (magpie fitShape; kimi 11133): true → {} (什么都行),
+		// false → {"not": {}} (什么都不行); additionalProperties/unevaluatedProperties 的
+		// bool 是合法语义, 保留。
+		for key, sub := range v {
+			if b, isBool := sub.(bool); isBool && !toolSchemaBoolOK[key] {
+				if b {
+					v[key] = map[string]any{}
+				} else {
+					v[key] = map[string]any{"not": map[string]any{}}
+				}
+			}
+		}
+		for _, sub := range v {
+			shapeSchema(sub, depth+1)
+		}
+		shapeSchemaMap(v, depth)
+		// 空 enum 的位置整个删除 (校验器拒绝, 任何值都套不进去)
+		for key, sub := range v {
+			if sub, isMap := sub.(map[string]any); isMap {
+				if _, empty := sub["__emptyEnum"]; empty {
+					delete(v, key)
+				}
+			}
+		}
+	}
+}
+
+// isSchemaPosition: 值是 schema (或 schema 列表/映射) 的关键字。
+func isSchemaPosition(key string) bool {
+	switch key {
+	case "items", "additionalItems", "unevaluatedItems", "contains", "not", "if", "then", "else",
+		"propertyNames", "additionalProperties", "unevaluatedProperties":
+		return true
+	case "anyOf", "oneOf", "allOf", "prefixItems":
+		return true
+	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+		return true
+	}
+	return false
+}
+
+// shapeSchemaMap 修整单个 schema 节点本体 (不改子 schema)。
+func shapeSchemaMap(s map[string]any, depth int) {
+	// bool 当 schema (magpie 实测 11133): true → {} (什么都行), false → {"not": {}} (什么都不行)
+	// 上面 switch 已处理, 这里处理 map 内字段。
+
+	// required 非列表 → 丢弃 (校验器拒绝, 且无等价修正)
+	if req, has := s["required"]; has {
+		if _, isList := req.([]any); !isList {
+			delete(s, "required")
+		}
+	}
+
+	// 未知类型 → 丢弃; 多类型 (除 null 外) → anyOf 拆分
+	if t, has := s["type"]; has {
+		switch tv := t.(type) {
+		case string:
+			if !toolSchemaKnownTypes[tv] {
+				delete(s, "type")
+			}
+		case []any:
+			known := make([]any, 0, len(tv))
+			for _, one := range tv {
+				ts, isStr := one.(string)
+				if !isStr || !toolSchemaKnownTypes[ts] {
+					continue
+				}
+				known = append(known, ts)
+			}
+			switch len(known) {
+			case 0:
+				delete(s, "type")
+			case 1:
+				s["type"] = known[0]
+			default:
+				anyOf := make([]any, 0, len(known))
+				for _, one := range known {
+					anyOf = append(anyOf, map[string]any{"type": one})
+				}
+				s["anyOf"] = anyOf
+				delete(s, "type")
+			}
+		}
+	}
+
+	// enum: 补类型 (从值推导); 空枚举 → 整个 schema 位置删除 (由调用方处理)
+	if e, has := s["enum"]; has {
+		values, isList := e.([]any)
+		if !isList || len(values) == 0 {
+			s["__emptyEnum"] = true
+		} else if _, hasType := s["type"]; !hasType {
+			if _, hasAnyOf := s["anyOf"]; !hasAnyOf {
+				// 从首个值推导类型: 全 string → string; 含 null → [T, "null"] 的 anyOf
+				hasNull := false
+				kind := ""
+				uniform := true
+				for _, val := range values {
+					if val == nil {
+						hasNull = true
+						continue
+					}
+					var k string
+					switch val.(type) {
+					case string:
+						k = "string"
+					case float64:
+						k = "number"
+					case bool:
+						k = "boolean"
+					case []any:
+						k = "array"
+					case map[string]any:
+						k = "object"
+					default:
+						k = ""
+					}
+					if k == "" {
+						uniform = false
+						break
+					}
+					if kind == "" {
+						kind = k
+					} else if kind != k {
+						uniform = false
+						break
+					}
+				}
+				if uniform && kind != "" {
+					if hasNull {
+						s["anyOf"] = []any{map[string]any{"type": kind, "enum": values}, map[string]any{"type": "null"}}
+						delete(s, "enum")
+					} else {
+						s["type"] = kind
+					}
+				}
+			}
+		}
+	}
+
+	// oneOf 且无类型: 全部分支 (含经本地 $ref 解析) 都是 object → 补 type object
+	// (magpie #378: kimi 对无类型 oneOf 拒 11133)
+	if _, hasType := s["type"]; !hasType {
+		if oneOf, ok := s["oneOf"].([]any); ok && len(oneOf) > 0 {
+			allObj := true
+			for _, branch := range oneOf {
+				bm, isMap := branch.(map[string]any)
+				if !isMap || !branchIsObject(bm, 0) {
+					allObj = false
+					break
+				}
+			}
+			if allObj {
+				s["type"] = "object"
+			}
+		}
+	}
+
+	// pattern 里的 \0 (deepseek 校验器不认): 改写 \u0000, 匹配不变 (magpie fitSchema)
+	if p, ok := s["pattern"].(string); ok && strings.Contains(p, "\\0") {
+		var b strings.Builder
+		for i := 0; i < len(p); i++ {
+			if i+1 < len(p) && p[i] == '\\' && p[i+1] == '0' {
+				backslashes := 0
+				for j := i - 1; j >= 0 && p[j] == '\\'; j-- {
+					backslashes++
+				}
+				if backslashes%2 == 0 {
+					b.WriteString("\\u0000")
+					i++
+					continue
+				}
+			}
+			b.WriteByte(p[i])
+		}
+		s["pattern"] = b.String()
+	}
+}
+
+// branchIsObject: oneOf 分支是否 object — 直接声明, 或经本地 $ref 指到的定义。
+func branchIsObject(branch map[string]any, depth int) bool {
+	if depth > 8 {
+		return false
+	}
+	if t, has := branch["type"]; has {
+		ts, isStr := t.(string)
+		return isStr && ts == "object"
+	}
+	if ref, has := branch["$ref"]; has {
+		rs, isStr := ref.(string)
+		if !isStr || !strings.HasPrefix(rs, "#/") {
+			return false
+		}
+		// 本地 $ref: 由调用方提供根 schema 才能解析; 简化处理 — 无法解析时保守不加 type
+		return false
+	}
+	return false
+}
+
 func findModelConfig(models []ManifestModel, modelID string) *ManifestModel {
 	for i := range models {
 		if strings.EqualFold(models[i].ID, modelID) {
@@ -277,7 +552,7 @@ func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *Mani
 		outMap["max_tokens"] = *inReq.MaxTokens
 	}
 	if len(inReq.Tools) > 0 {
-		outMap["tools"] = inReq.Tools
+		outMap["tools"] = shapeTools(inReq.Tools)
 		if inReq.ToolChoice != nil {
 			outMap["tool_choice"] = inReq.ToolChoice
 		}

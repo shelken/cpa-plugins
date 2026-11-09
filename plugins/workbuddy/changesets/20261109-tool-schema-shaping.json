@@ -1,0 +1,1 @@
+{"bump": "patch", "note": "工具 schema 整形防上游 11133/11152: 无类型 enum 补类型, 全 object 的 oneOf 补 type, bool schema 等价替换, 非法工具名净化去重, required 非列表/空枚举/未知类型清理, pattern NUL 改写"}
