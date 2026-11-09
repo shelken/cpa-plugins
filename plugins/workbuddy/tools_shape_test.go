@@ -411,7 +411,8 @@ func TestShapeParametersForms(t *testing.T) {
 	}
 }
 
-// 历史 tool_calls、tool 消息 name、tool_choice 一并改名 (magpie fitTools)。
+// 历史 tool_calls、tool 消息 name 随请求侧改名 (magpie fitTools); tool_choice
+// 由 normalizeToolChoice 单独整形, 见 TestNormalizeToolChoice。
 func TestShapeHistoryAndToolChoiceRenamed(t *testing.T) {
 	orig2safe := map[string]string{"a.b": "a_b"}
 	messages := []chatMessage{
@@ -428,15 +429,6 @@ func TestShapeHistoryAndToolChoiceRenamed(t *testing.T) {
 	}
 	if messages[2].Name != "a_b" {
 		t.Errorf("tool 消息 name 应改名, got %v", messages[2].Name)
-	}
-
-	toolChoice := any(map[string]any{
-		"type":     "function",
-		"function": map[string]any{"name": "a.b"},
-	})
-	renameToolChoice(toolChoice, orig2safe)
-	if toolChoice.(map[string]any)["function"].(map[string]any)["name"] != "a_b" {
-		t.Errorf("tool_choice 应改名, got %v", toolChoice.(map[string]any)["function"])
 	}
 }
 
@@ -485,6 +477,39 @@ func TestShapeRenameBackNoop(t *testing.T) {
 	out = renameBackChunk(raw, map[string]string{"a_b": "a.b"})
 	if string(out) != string(raw) {
 		t.Errorf("帧内无改名工具名应原样返回, got %s", out)
+	}
+}
+
+// normalizeToolChoice: 上游只认真字符串形态, 且不执行 none 约束 (实测忽略,
+// magpie toolChoiceOn) → none 连同 tools 一起不发; auto/required/function{name}
+// 转字符串, function 名用整形后的 safe 名。
+func TestNormalizeToolChoice(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        any
+		orig2safe map[string]string
+		want      any
+		dropTools bool
+	}{
+		{"字符串 none 删工具", "none", nil, nil, true},
+		{"字符串 NONE 大小写不敏感", " NONE ", nil, nil, true},
+		{"字符串 auto 保留", "auto", nil, "auto", false},
+		{"对象 none 删工具", map[string]any{"type": "none"}, nil, nil, true},
+		{"对象 auto 转字符串", map[string]any{"type": "auto"}, nil, "auto", false},
+		{"对象 required 转字符串", map[string]any{"type": "required"}, nil, "required", false},
+		{"对象点名函数转字符串", map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}, nil, "get_weather", false},
+		{"点名函数用 safe 名", map[string]any{"type": "function", "function": map[string]any{"name": "a.b"}}, map[string]string{"a.b": "a_b"}, "a_b", false},
+		{"未知形态删约束", float64(1), nil, nil, false},
+		{"布尔删约束", true, nil, nil, false},
+	}
+	for _, tc := range cases {
+		got, drop := normalizeToolChoice(tc.in, tc.orig2safe)
+		if drop != tc.dropTools {
+			t.Errorf("%s: dropTools = %v, want %v", tc.name, drop, tc.dropTools)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: choice = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

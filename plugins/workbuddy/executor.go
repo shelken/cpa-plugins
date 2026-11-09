@@ -690,23 +690,44 @@ func applyHistoryRenames(messages []chatMessage, orig2safe map[string]string) {
 	}
 }
 
-// renameToolChoice 改写 tool_choice.function.name (magpie fitTools)。
-func renameToolChoice(choice any, orig2safe map[string]string) {
-	if len(orig2safe) == 0 {
-		return
-	}
-	cm, ok := choice.(map[string]any)
-	if !ok {
-		return
-	}
-	fn, ok := cm["function"].(map[string]any)
-	if !ok {
-		return
-	}
-	if name, _ := fn["name"].(string); name != "" {
-		if safe, ok := orig2safe[name]; ok {
-			fn["name"] = safe
+// normalizeToolChoice 把客户端的 tool_choice 整形为上游认真执行且接受的形态
+// (magpie toolChoiceOn 实测): 上游只认真字符串形态 (对象形态虽不报错但约束
+// 不生效); none 上游不执行 (实测照样调工具) → 删约束连同 tools 一起不发;
+// auto/required 转字符串; 点名函数转裸函数名字符串, 名字用整形后的 safe 名。
+// 返回整形后的 choice 与是否应丢弃全部工具。
+func normalizeToolChoice(choice any, orig2safe map[string]string) (any, bool) {
+	switch cv := choice.(type) {
+	case string:
+		if strings.EqualFold(strings.TrimSpace(cv), "none") {
+			return nil, true
 		}
+		return cv, false
+	case map[string]any:
+		t, _ := cv["type"].(string)
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "none":
+			return nil, true
+		case "auto", "required":
+			return strings.ToLower(strings.TrimSpace(t)), false
+		case "function":
+			fn, ok := cv["function"].(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			name, _ := fn["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return "auto", false
+			}
+			if safe, ok := orig2safe[name]; ok {
+				name = safe
+			}
+			return name, false
+		default:
+			return nil, false
+		}
+	default:
+		return nil, false
 	}
 }
 
@@ -859,10 +880,21 @@ func prepareChatRequestBody(cfg *PluginConfig, reqPayload []byte, manifest *Mani
 	// 工具整形可能改名非法工具名 (上游 11152), 改名映射同时用于: 请求侧改写历史
 	// tool_calls/tool 消息名/tool_choice, 响应侧把 safe 名换回客户端原名。
 	renames := map[string]string{}
+	dropTools := false
 	if len(inReq.Tools) > 0 {
 		renames = shapeTools(inReq.Tools)
 		applyHistoryRenames(inReq.Messages, renames)
-		renameToolChoice(inReq.ToolChoice, renames)
+		if inReq.ToolChoice != nil {
+			var normalized any
+			normalized, dropTools = normalizeToolChoice(inReq.ToolChoice, renames)
+			inReq.ToolChoice = normalized
+		}
+		if dropTools {
+			// 上游不执行 none 约束 (实测照样调工具), 唯一可靠的禁止方式是不发工具
+			inReq.Tools = nil
+			inReq.ToolChoice = nil
+			inReq.ParallelToolCalls = nil
+		}
 	}
 
 	outMap := make(map[string]any)
