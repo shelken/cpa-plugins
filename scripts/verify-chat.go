@@ -819,7 +819,10 @@ func (r *runner) responsesStream(payload map[string]any) (responsesTurn, error) 
 			} `json:"response"`
 		}
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
-			return out, fmt.Errorf("第 %d 帧 JSON 无效: %w", out.frames, err)
+			if readErr != nil {
+				break
+			}
+			return out, fmt.Errorf("第 %d 帧解析失败: %w", out.frames, err)
 		}
 		switch evt.Type {
 		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
