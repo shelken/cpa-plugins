@@ -40,9 +40,9 @@ var scenarioRegistry = []scenario{
 	{"session", 3, "多轮会话: 流式帧合规 / 正文输出 / 上下文记忆 / 多轮前缀缓存", runSession},
 	{"probe", 2, "重复请求缓存: 同一请求连发两次, 第二次应命中前缀缓存", runProbe},
 	{"nonstream", 1, "非流式链路: 插件聚合上游流式后返回完整 chat.completion", runNonStream},
-	{"responses", 1, "Responses 转换链路: developer 角色 / 脏思考历史剥离 / 无思考工具续跑", runResponses},
+	{"responses", 1, "Responses 转换链路: developer 角色 / 占位符复读检测 / 无思考工具续跑", runResponses},
 	{"tools", 3, "工具调用: 定义透传 / 非流式聚合 / 工具结果消费", runTools},
-	{"toolchoice", 3, "工具选择: 点名函数 / none / parallel_tool_calls=false 是否原样上行", runToolChoice},
+	{"toolchoice", 3, "工具选择: 点名函数 / 禁止调用 / 并行调用行为", runToolChoice},
 	{"effort", 2 * effortSamples, "思考深度与思维链: 最低档与最高档各采样取中位", runEffort},
 	{"guard", 1, "模型守卫: 未知模型 id 在路由阶段被拒 (不进入凭据与上游)", runGuard},
 }
@@ -818,8 +818,8 @@ func (r *runner) responsesStream(payload map[string]any) (responsesTurn, error) 
 				} `json:"error"`
 			} `json:"response"`
 		}
-		if json.Unmarshal([]byte(data), &evt) != nil {
-			continue
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			return out, fmt.Errorf("第 %d 帧 JSON 无效: %w", out.frames, err)
 		}
 		switch evt.Type {
 		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
@@ -855,7 +855,7 @@ func highestEffort(def *manifestModel) string {
 
 // runResponses 用单次 /v1/responses 流式请求覆盖宿主 Responses→Chat 转换层的三个高频故障面:
 // 1. developer 角色映射 (PR #30, 未映射时 workbuddy 报 400 11128);
-// 2. 无思考历史工具调用与已持久化占位符的高浓度回放剥离 (#22 / PR #34, 未剥离时上游复读占位符);
+// 2. 回放无思考工具调用和占位符历史后，检测响应是否复读占位符 (#22)。请求侧剥离由插件单测验证。
 // 3. 剥离后无思考工具历史续跑兼容 (不触发 11155, 且模型消费末尾工具结果)。
 func runResponses(s *session) {
 	effort := highestEffort(s.modelDef)
@@ -891,7 +891,7 @@ func runResponses(s *session) {
 		map[string]any{"type": "function_call_output", "call_id": "call_seed_final", "output": "基数=17"},
 		map[string]any{
 			"role":    "user",
-			"content": "工具已返回基数=17。请计算在 17 到 120 之间（含 17 和 120）一共有多少个整数能被 7 整除？先推演再给结论，最后写 答案=N",
+			"content": "读取最后一条工具结果里的基数。计算从该基数到 120（含两端）有多少个整数能被 7 整除。先推演，最后一行严格写 答案=N。工具结果缺少基数时，只回复 基数缺失。",
 		},
 	)
 
@@ -929,17 +929,19 @@ func runResponses(s *session) {
 	supportsReasoning := s.modelDef == nil || s.modelDef.SupportsReasoning
 	switch {
 	case strings.Contains(t.reasoning, hostReasoningPlaceholder) || strings.Contains(t.content, hostReasoningPlaceholder):
-		s.record("Responses 占位剥离", "FAIL", "响应复读了 [reasoning unavailable]: 推理="+truncate(t.reasoning, 40)+" 正文="+truncate(t.content, 40))
+		s.record("Responses 未复读占位符", "FAIL", "响应复读了 [reasoning unavailable]: 推理="+truncate(t.reasoning, 40)+" 正文="+truncate(t.content, 40))
 	case supportsReasoning && strings.TrimSpace(t.reasoning) == "":
-		s.record("Responses 占位剥离", "FAIL", "上限档推演题未产出思考摘要, 无法确认思考未被污染")
+		s.record("Responses 未复读占位符", "FAIL", "上限档推演题未返回推理摘要")
 	default:
-		s.record("Responses 占位剥离", "PASS", fmt.Sprintf("推理 %d 字且不含占位符, 首段: %s", len([]rune(t.reasoning)), truncate(t.reasoning, 40)))
+		s.record("Responses 未复读占位符", "PASS", "本次响应的推理与正文均未复读 [reasoning unavailable]")
 	}
 
-	if strings.Contains(t.content, "15") {
-		s.record("Responses 工具续跑", "PASS", "模型消费末尾工具结果算出 15: "+truncate(t.content, 50))
+	lines := strings.Split(strings.TrimSpace(t.content), "\n")
+	lastLine := strings.TrimSpace(lines[len(lines)-1])
+	if lastLine == "答案=15" {
+		s.record("Responses 工具续跑", "PASS", "末行答案与工具结果匹配: "+lastLine)
 	} else {
-		s.record("Responses 工具续跑", "FAIL", "未算出正确结果 15 (预期 21..119 共 15 个), 实际正文: "+truncate(t.content, 60))
+		s.record("Responses 工具续跑", "FAIL", "预期末行为 答案=15，实际为 "+truncate(lastLine, 60))
 	}
 }
 
@@ -949,11 +951,11 @@ func runTools(s *session) {
 	checkTools(s)
 }
 
-// runToolChoice 覆盖客户端工具选择意图是否原样上行: 未指定时回落 auto 的基准由 tools 场景守着。
+// runToolChoice 观察工具选择约束下模型的调用行为。
 // 点名函数必须挂在「至少两个工具 + 提示词指向另一个工具」上: 若只给唯一工具且提示词本身要求查它,
 // 即使插件把 tool_choice 删掉或改回 auto 也会因模型别无选择而假绿。
 func runToolChoice(s *session) {
-	fmt.Println("[工具选择] tool_choice 与 parallel_tool_calls 应原样上行")
+	fmt.Println("[工具选择] 点名函数、禁止调用与并行调用行为")
 	twoTools := []toolSpec{timeTool(), weatherTool()}
 	timePrompt := []chatMessage{{Role: "user", Content: "现在东京几点了? 必须用工具查, 不要凭记忆回答"}}
 
@@ -994,10 +996,12 @@ func runToolChoice(s *session) {
 	switch {
 	case parallelErr != nil:
 		s.record("parallel_tool_calls=false", "FAIL", "请求失败: "+parallelErr.Error()+" 响应头: "+truncate(parallel.rawHead, 80))
+	case len(parallel.toolCalls) == 0:
+		s.record("parallel_tool_calls=false", "WARN", "模型未调用工具，未测到并行约束")
 	case len(parallel.toolCalls) > 1:
 		s.record("parallel_tool_calls=false", "FAIL", fmt.Sprintf("仍返回 %d 个并发调用", len(parallel.toolCalls)))
 	default:
-		s.record("parallel_tool_calls=false", "PASS", fmt.Sprintf("HTTP %d, tool_calls=%d", parallel.status, len(parallel.toolCalls)))
+		s.record("parallel_tool_calls=false", "PASS", "本次只返回 1 个工具调用")
 	}
 }
 

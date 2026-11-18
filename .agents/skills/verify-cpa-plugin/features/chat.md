@@ -9,7 +9,7 @@
 - `chat-cot` 思维链下行以 `reasoning_content` 增量返回; 上行回传历史思考时, qwenworkcn 读 `reasoning_content`, workbuddy 将 `reasoning_content` 改名为官方客户端的 `reasoning` 字段回传, 两插件均剥离宿主注入的 `[reasoning unavailable]` 占位符
 - `chat-cache` 多轮与重复请求命中上游前缀缓存
 - `chat-memory` 多轮里模型复现前文事实
-- `chat-responses` 客户端走 `POST /v1/responses` 经宿主转换为 Chat Completions 进入插件: `developer` 角色兼容、无思考工具历史与脏占位符剥离、工具结果续跑
+- `chat-responses` 客户端走 `POST /v1/responses` 经宿主转换为 Chat Completions 进入插件: `developer` 角色兼容、占位符复读检测、工具结果续跑
 - `chat-effort` 客户端 `reasoning_effort` 真实改变上游思考深度 (workbuddy 对未显式指定 `effort` 且 `max_tokens <= 1024` 的小预算请求不注入默认档位)
 - `chat-tools` 工具定义整形与透传 (workbuddy 修整异形 schema 并对非法工具名做双向安全改名), 模型返回 `tool_calls` 并消费工具结果
 - `chat-tool-choice` 客户端 `tool_choice` 与 `parallel_tool_calls` 的约束到达上游 (各插件现状见下方 Gotchas: workbuddy 已支持 `none`, 点名函数与 `parallel_tool_calls=false` 按身份档剥离/覆写; qwenworkcn 点名函数被网关拒)
@@ -25,7 +25,7 @@
 | `session` | 流式帧合规、正文输出、上下文记忆、多轮缓存(轮次2/3)、用量上报 | 改了消息组装、会话头、请求体构造 |
 | `probe` | 重复请求缓存(二次)、用量上报 | 改了缓存相关字段、请求幂等性 |
 | `nonstream` | 非流式链路 | 改了流式聚合、`stream:false` 路径 |
-| `responses` | Responses 流式请求、Responses 占位剥离、Responses 工具续跑 | 改了角色映射 (`developer`→`system`)、历史思考字段清洗/回传、宿主转换层兼容或升级宿主版本 |
+| `responses` | Responses 流式请求、Responses 未复读占位符、Responses 工具续跑 | 改了角色映射 (`developer`→`system`)、历史思考字段清洗/回传、宿主转换层兼容或升级宿主版本 |
 | `tools` | 工具调用 流式/非流式、工具结果消费 | 改了工具 schema 整形/改名、工具字段透传、分片拼接、历史思考回传 |
 | `toolchoice` | 点名函数、`tool_choice=none`、`parallel_tool_calls=false` | 改了 `tool_choice` 或 `parallel_tool_calls` 的上行构造。已知现状: workbuddy 两档 `tool_choice=none` 均 PASS (连同 `tools` 剥离), 点名函数仍因桌面档删字段 / CLI 档固定 `auto` 而 FAIL; qwenworkcn 点名函数被网关 400 并触发凭据冷却, 同次运行的后续请求全部 503 |
 | `effort` | 思维链输出、思考深度传递 | 改了推理档位映射、`reasoning_effort` 传递、小预算门限 |
@@ -52,15 +52,15 @@
 | 重复请求缓存(二次) | 同一请求连发两次, 第二次命中数大于 0 |
 | 思考深度传递 | 最低档与最高档各采样 3 次比中位数: 高档中位大于低档为 PASS; 相等或反序记 WARN (上游未按档位加深, 透传契约由 plugins/<id> 单测钉住); 仅在两档所有采样都没有任何思考输出时 FAIL (思考链路失效)。全采样有 reasoning_tokens 时按 tokens 比, 否则退到推理正文字数 |
 | 非流式链路 | 单条完整响应, `object` 为 `chat.completion`, 带 `finish_reason`; `usage` 缺失不判 FAIL |
-| Responses 流式请求 | `POST /v1/responses` (含 `developer` 角色与 32 轮工具历史) 返回 `HTTP 200`, 流内无错误事件且收到 `response.completed` |
-| Responses 占位剥离 | 上限档推演题经宿主注入及历史回放 32 轮 `[reasoning unavailable]` 后, 响应推理摘要非空且推理与正文均不含 `[reasoning unavailable]` |
-| Responses 工具续跑 | 模型消费无思考历史末尾的工具输出并算出预期推演结果 (`15`) |
+| Responses 流式请求 | `POST /v1/responses` (含 `developer` 角色与 32 轮工具历史) 返回 `HTTP 200`，各数据帧可解析、流内无错误事件且收到 `response.completed` |
+| Responses 未复读占位符 | 回放含占位符的工具历史后，响应推理与正文均不含 `[reasoning unavailable]`；支持思考的模型须返回推理摘要 |
+| Responses 工具续跑 | 基数只出现在工具结果里，回答末行须为 `答案=15` |
 | 工具调用 流式 | 带 `tools` 与 `tool_choice:auto` 的请求返回 `finish_reason:"tool_calls"`, 每个调用带非空 `id` 与函数名, `arguments` 是合法 JSON |
 | 工具调用 非流式 | 同一请求走聚合路径后仍带 `tool_calls` 与合法 `arguments` |
 | 工具结果消费 | 把首轮 `tool_calls`、思考文本与工具结果带回下一轮, 模型正文引用了工具返回的事实 |
 | 点名函数 | 同时提供 `get_time` 与 `get_weather` 且提示词询问时间时, `tool_choice` 对象点名 `get_weather` 须返回恰 1 个 `get_weather` 调用; 调了 `get_time` 或直接答正文即 FAIL |
 | `tool_choice=none` | 同请求带 `tool_choice:"none"` 时不得返回 `tool_calls`, 且要有正文或推理输出; 返回调用即 FAIL |
-| `parallel_tool_calls=false` | 同时询问两个城市且显式设 `parallel_tool_calls:false` 时被上游接受 (HTTP 2xx), 且返回的调用数不超过 1 |
+| `parallel_tool_calls=false` | 同时询问两个城市并设 `parallel_tool_calls:false`，返回 1 个调用记 PASS，0 个记 WARN，多个记 FAIL。字段透传需检查上游请求 |
 | 未知模型拒绝 | 未报送的模型 id 在路由阶段被拒 (400 `model_not_found`); 同沙箱内合法模型会走到凭据阶段 (无凭据时 503 `auth_not_found`), 说明二者处理阶段不同 |
 
 缓存判据要有可命中的公共前缀才有意义, 脚本默认用重复段落撑出足够长的 system 消息, 段落数由 `-prefix` 控制
@@ -93,12 +93,12 @@ Preconditions:
     -token-file ~/.cache/cpa-plugins/sandbox/workbuddy/management-key \
     -scenarios tools,effort
 
-  # 发布门禁 / 协议层改动: 跑除已知网关报错外的全集
+  # 发布门禁 / 协议层改动: 跳过已知受限的 toolchoice
   go run scripts/verify-chat.go -model workbuddy/hy3 \
     -token-file ~/.cache/cpa-plugins/sandbox/workbuddy/management-key \
-    -scenarios all
+    -scenarios session,probe,nonstream,responses,tools,effort,guard
   ```
-  qwenworkcn 跑 `all` 时 `toolchoice` 排在 `effort` 前 (按注册顺序执行, 改书写顺序无效), 其网关 400 会让凭据冷却约一分钟, `effort` 随之全部 503。先单独跑除 `toolchoice` 外的场景, 冷却结束后再单独跑 `toolchoice`; 冷却期的 503 不算 `effort` 失败
+  改工具选择时单独运行 `-scenarios toolchoice`。qwenworkcn 的点名请求遇到网关 400 后会触发约一分钟的凭据冷却。冷却结束后再运行其他场景
 
 - **工具调用是独立场景。** 无需手工发请求, 首轮带 `get_weather` 定义断言 `finish_reason:"tool_calls"` 与合法 `arguments`, 次轮带回调用、思考文本与结果断言模型引用了结果; 只在点名 `-scenarios tools` 时执行
 
@@ -129,7 +129,7 @@ Preconditions:
 - 会话级 id 必须整轮不变 -> 会话头每请求新生成会让上游把每轮当新会话, 前缀缓存命中率随请求序列抖动; 只有消息 id 与 trace id 该每次新
 - 流式缺 `[DONE]` 或缺 `usage` -> 插件已不挂本地对话超时 (上游连接由宿主 HTTP 流回调管理, 宿主客户端无整体超时), 先排查验收客户端自身的 `-timeout` (默认 180s)、客户端提前断开、上游中断; `verify-chat.go` 会区分「读取中断」与「缺终止帧」
 - workbuddy 点名函数与 `parallel_tool_calls=false` 不传客户端约束 (`tool_choice=none` 已单独处理) -> 上游本身忽略 `none` 照样调工具, 故插件遇到 `none` 时连同 `tools` 整组剥离使 `tool_choice=none` 稳定通过; 其余约束则受身份档控制: 桌面档在上行前删掉 `tool_choice` 与 `parallel_tool_calls` (`plugins/workbuddy/data/static-config.json` 桌面档 omit), CLI 档固定覆写为 `auto`/`true`
-- 宿主 `/v1/responses` 转换层副作用 -> 宿主 v8.0.61+ 保留 `developer` 角色 (workbuddy 未转 `system` 或首条非 `system` 会报 `400 code 11128`), 且开启 `reasoning.effort` 时对无思考工具历史自动注入 `[reasoning unavailable]` (未剥离会诱发模型复读并经客户端回放锁死, 见 `responses` 场景)
+- 宿主 `/v1/responses` 转换层副作用 -> 宿主 v8.0.61+ 保留 `developer` 角色 (workbuddy 未转 `system` 或首条非 `system` 会报 `400 code 11128`), 且开启 `reasoning.effort` 时对无思考工具历史自动注入 `[reasoning unavailable]`。`responses` 只观察本次响应是否复读。请求侧剥离由 workbuddy 的 `TestStripHostReasoningPlaceholder` 与 qwenworkcn 的 `TestBuildChatRequestBodyStripsHostReasoningPlaceholder` 验证
 - 小预算请求无思考属预期 -> workbuddy 对未显式传 `reasoning_effort` 且 `max_tokens <= 1024` 的短预算请求不注入默认思考档位, 避免思考耗光输出预算
 - qwenworkcn 点名函数返回 `upstream gateway error HTTP 400: {"code":"400","message":"Error in upstream response"}` -> 插件把客户端对象原样放进 Cosy `parameters.tool_choice`, 网关在 200 流里回了错误帧; 普通工具调用可用不代表点名约束可用, 是否需要另一种编码尚无协议证据。外层 HTTP 200 不能证明对话成功, 错误藏在流内帧里
 - 验证下游取消链别在上游出数据时断开 -> 上游持续出数据时, 下一次 emit 失败就会让插件停读, 取消链断了也看不出来; 只有在上游首字节前断开, 插件才完全依赖宿主取消解除阻塞 (生产 `bytes_sent: 0` 卡几十秒到几分钟的形态)
