@@ -1,1 +1,0 @@
-{"bump": "patch", "note": "剥离宿主 Responses→Chat 转换注入的 [reasoning unavailable] 历史思考占位符, 阻断上游复读污染"}
