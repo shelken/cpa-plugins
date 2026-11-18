@@ -105,6 +105,8 @@ func sanitizeMessageContent(content any, supportsImages bool) any {
 	return cleaned
 }
 
+const hostReasoningPlaceholder = "[reasoning unavailable]"
+
 func cleanMessages(rawMessages []chatMessage, supportsImages bool) []chatMessage {
 	var cleaned []chatMessage
 	droppedToolCallIDs := make(map[string]struct{})
@@ -120,6 +122,11 @@ func cleanMessages(rawMessages []chatMessage, supportsImages bool) []chatMessage
 					}
 				}
 				continue
+			}
+
+			// 宿主 Responses→Chat 转换对缺失历史思考注入该占位符，送达上游会诱发模型复读并经客户端回放累积 (#22)。
+			if strings.TrimSpace(msg.ReasoningContent) == hostReasoningPlaceholder {
+				msg.ReasoningContent = ""
 			}
 
 			var validToolCalls []toolCall

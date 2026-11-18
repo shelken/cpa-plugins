@@ -144,6 +144,8 @@ func normalizeSystemFirst(messages []chatMessage) []chatMessage {
 
 }
 
+const hostReasoningPlaceholder = "[reasoning unavailable]"
+
 func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *ManifestV2) []chatMessage {
 	rawMessages = normalizeSystemFirst(rawMessages)
 	var cleaned []chatMessage
@@ -160,6 +162,11 @@ func cleanMessages(rawMessages []chatMessage, supportsImages bool, manifest *Man
 					}
 				}
 				continue
+			}
+
+			// 宿主 Responses→Chat 转换对缺失历史思考注入该占位符，送达上游会诱发模型复读并经客户端回放累积 (#22)。
+			if strings.TrimSpace(msg.ReasoningContent) == hostReasoningPlaceholder {
+				msg.ReasoningContent = ""
 			}
 
 			var validToolCalls []toolCall
