@@ -25,10 +25,10 @@ description: 验证 cpa-plugins 仓库插件与发布产物的可用性。涵盖
 两个入口都支持多项参数, 一次点名多个场景/插件/断言, 不必重复调用:
 
 ```bash
-# 对话链路: 只跑多轮会话 + 非流式; 场景可逗号分隔, 也可重复传 -scenarios
-go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> \
-  -token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key \
-  -scenarios session,nonstream
+# 对话链路: 默认连本地沙箱 127.0.0.1:18317, 优先选廉价模型 (workbuddy/hy3 或 workbuddy/deepseek-v4.1-flash, 不用昂贵的 glm-5.3)
+go run scripts/verify-chat.go -model workbuddy/hy3 \
+  -token-file ~/.cache/cpa-plugins/sandbox/workbuddy/management-key \
+  -scenarios session,nonstream,responses
 
 # 打印可用场景与各自请求成本, 不发请求
 go run scripts/verify-chat.go -list
@@ -125,10 +125,12 @@ go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/p
 go run scripts/management-api.go -base http://<host>:8317 -auth client -path /v1/models
 ```
 
-对话链路验收用专用入口, 按场景选择要跑的判据 (流式帧、上下文记忆、缓存、思考深度、非流式、工具调用、未知模型各为一个场景, 见 features/chat.md 与「验证范围」节):
+对话链路验收用专用入口, 按场景选择要跑的判据 (流式帧、上下文记忆、缓存、Responses 转换链路、思考深度、非流式、工具调用、未知模型各为一个场景, 见 features/chat.md 与「验证范围」节; workbuddy 对话验收优先用廉价模型 `workbuddy/hy3` 或 `workbuddy/deepseek-v4.1-flash`, 不跑高倍率模型如 `glm-5.3`):
 
 ```bash
-go run scripts/verify-chat.go -base http://<host>:8317 -model <id>/<model> -scenarios session,nonstream
+go run scripts/verify-chat.go -model workbuddy/hy3 \
+  -token-file ~/.cache/cpa-plugins/sandbox/workbuddy/management-key \
+  -scenarios session,nonstream,responses
 go run scripts/verify-chat.go -list    # 列出场景与请求成本
 ```
 

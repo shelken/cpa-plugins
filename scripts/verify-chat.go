@@ -14,14 +14,17 @@ import (
 	"time"
 )
 
-// 对话链路的验收入口。职责边界: 只驱动真实宿主的 /v1/chat/completions, 断言用户可见行为。
+// 对话链路的验收入口。职责边界: 驱动真实宿主的 /v1/chat/completions 与 /v1/responses, 断言用户可见行为。
 // 装载与注册归 dev-sandbox.go, 仓库不变量归 check-plugins.go, 发布产物归 verify-registry-install.go。
 // 场景以注册表声明 (scenarioRegistry), 加场景 = 写一个 run 函数 + 注册一行, main 不随场景增长。
 //
 // 密钥纪律: 管理密钥读密钥缓存文件 /tmp/cpa-plugins-cpa-token, 客户端密钥由管理面就地取得,
 // 二者都不得出现在终端输出里, 出错信息也只回显打码后的形态。
 
-const doneFrame = "[DONE]"
+const (
+	doneFrame                = "[DONE]"
+	hostReasoningPlaceholder = "[reasoning unavailable]"
+)
 
 // scenario 是验收集的注册单位: 一段可独立执行的请求序列, 以及它产出的判据。
 // requests 是成本披露 (真实请求次数), 供调用方决定要不要跑。
@@ -37,8 +40,9 @@ var scenarioRegistry = []scenario{
 	{"session", 3, "多轮会话: 流式帧合规 / 正文输出 / 上下文记忆 / 多轮前缀缓存", runSession},
 	{"probe", 2, "重复请求缓存: 同一请求连发两次, 第二次应命中前缀缓存", runProbe},
 	{"nonstream", 1, "非流式链路: 插件聚合上游流式后返回完整 chat.completion", runNonStream},
+	{"responses", 1, "Responses 转换链路: developer 角色 / 占位符复读检测 / 无思考工具续跑", runResponses},
 	{"tools", 3, "工具调用: 定义透传 / 非流式聚合 / 工具结果消费", runTools},
-	{"toolchoice", 3, "工具选择: 点名函数 / none / parallel_tool_calls=false 是否原样上行", runToolChoice},
+	{"toolchoice", 3, "工具选择: 点名函数 / 禁止调用 / 并行调用行为", runToolChoice},
 	{"effort", 2 * effortSamples, "思考深度与思维链: 最低档与最高档各采样取中位", runEffort},
 	{"guard", 1, "模型守卫: 未知模型 id 在路由阶段被拒 (不进入凭据与上游)", runGuard},
 }
@@ -203,10 +207,11 @@ func loadModelDef(manifestPath, modelID string) *manifestModel {
 const toolResult = "北京 晴 26 摄氏度 湿度 38%"
 
 type chatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []toolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
 }
 
 // toolCall 请求与响应两侧同形: 客户端把模型产出的调用原样带回下一轮, 一个类型管两个方向。
@@ -594,7 +599,7 @@ func buildPrefix(repeats int) string {
 
 func main() {
 	base := flag.String("base", "http://127.0.0.1:18317", "目标实例地址")
-	model := flag.String("model", "hy3", "被测模型 id, 形如 <plugin>/<model>")
+	model := flag.String("model", "workbuddy/hy3", "被测模型 id, 形如 <plugin>/<model>")
 	manifestPath := flag.String("manifest", "", "静态模型清单路径, 默认按模型 id 的插件段推导")
 	prefixRepeats := flag.Int("prefix", 120, "长前缀段落重复次数, 用于制造可命中缓存的前缀")
 	timeout := flag.Duration("timeout", 180*time.Second, "单个请求超时")
@@ -748,33 +753,235 @@ func runNonStream(s *session) {
 	checkNonStream(s, nonStream, err)
 }
 
+type responsesTurn struct {
+	status    int
+	frames    int
+	completed bool
+	errMsg    string
+	content   string
+	reasoning string
+	rawHead   string
+}
+
+func (r *runner) responsesStream(payload map[string]any) (responsesTurn, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return responsesTurn{}, err
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, strings.TrimRight(r.base, "/")+"/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		return responsesTurn{}, err
+	}
+	if r.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+r.apiKey)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.client.Do(httpReq)
+	if err != nil {
+		return responsesTurn{}, err
+	}
+	defer resp.Body.Close()
+
+	raw, readErr := io.ReadAll(resp.Body)
+	out := responsesTurn{status: resp.StatusCode}
+	if len(raw) > 0 {
+		head := raw
+		if len(head) > 160 {
+			head = head[:160]
+		}
+		out.rawHead = strings.TrimSpace(string(head))
+	}
+	if resp.StatusCode >= 300 {
+		return out, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	for _, line := range strings.Split(string(raw), "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == doneFrame {
+			continue
+		}
+		out.frames++
+		var evt struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Response struct {
+				Status string `json:"status"`
+				Error  struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			if readErr != nil {
+				break
+			}
+			return out, fmt.Errorf("第 %d 帧解析失败: %w", out.frames, err)
+		}
+		switch evt.Type {
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			out.reasoning += evt.Delta
+		case "response.output_text.delta":
+			out.content += evt.Delta
+		case "response.completed":
+			out.completed = true
+		case "response.failed", "error":
+			if evt.Error.Message != "" {
+				out.errMsg = evt.Error.Message
+			} else if evt.Response.Error.Message != "" {
+				out.errMsg = evt.Response.Error.Message
+			} else {
+				out.errMsg = truncate(data, 80)
+			}
+		}
+	}
+	if readErr != nil {
+		return out, fmt.Errorf("响应体读取中断(已收到 %d 帧, completed=%v): %s", out.frames, out.completed, readErr)
+	}
+	return out, nil
+}
+
+func highestEffort(def *manifestModel) string {
+	if def == nil || len(def.SupportedEfforts) == 0 {
+		return "high"
+	}
+	efforts := append([]string(nil), def.SupportedEfforts...)
+	sort.Slice(efforts, func(i, j int) bool { return effortRank(efforts[i]) < effortRank(efforts[j]) })
+	return efforts[len(efforts)-1]
+}
+
+// runResponses 用单次 /v1/responses 流式请求覆盖宿主 Responses→Chat 转换层的三个高频故障面:
+// 1. developer 角色映射 (PR #30, 未映射时 workbuddy 报 400 11128);
+// 2. 回放无思考工具调用和占位符历史后，检测响应是否复读占位符 (#22)。请求侧剥离由插件单测验证。
+// 3. 剥离后无思考工具历史续跑兼容 (不触发 11155, 且模型消费末尾工具结果)。
+func runResponses(s *session) {
+	effort := highestEffort(s.modelDef)
+	fmt.Printf("[Responses 转换] developer 角色 + 32 轮脏思考工具历史 + 推演续跑 (effort=%s)\n", effort)
+
+	input := []any{
+		map[string]any{"role": "developer", "content": "请逐步推演并简明给出答案。"},
+		map[string]any{"role": "user", "content": "依次调用工具读取基准参数。"},
+	}
+	// 前 16 轮不带 reasoning item (触发宿主 fallbackToolReasoning 注入占位符),
+	// 后 15 轮显式携带已持久化的占位 summary (模拟被污染旧会话回放)。
+	for i := 1; i <= 31; i++ {
+		callID := fmt.Sprintf("call_hist_%d", i)
+		if i > 16 {
+			input = append(input, map[string]any{
+				"type": "reasoning",
+				"id":   fmt.Sprintf("rs_hist_%d", i),
+				"summary": []any{
+					map[string]any{"type": "summary_text", "text": hostReasoningPlaceholder},
+				},
+			})
+		}
+		input = append(input,
+			map[string]any{"type": "function_call", "call_id": callID, "name": "get_seed", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": callID, "output": "noop"},
+		)
+	}
+	// 空 summary 的独立 reasoning 条目后接 user 消息, 覆盖宿主合成空壳 assistant 分支 (#4265/#6482)。
+	input = append(input,
+		map[string]any{"type": "reasoning", "id": "rs_empty", "summary": []any{}},
+		map[string]any{"role": "user", "content": "读取最终基数并完成计算。"},
+		map[string]any{"type": "function_call", "call_id": "call_seed_final", "name": "get_seed", "arguments": "{}"},
+		map[string]any{"type": "function_call_output", "call_id": "call_seed_final", "output": "基数=17"},
+		map[string]any{
+			"role":    "user",
+			"content": "读取最后一条工具结果里的基数。计算从该基数到 120（含两端）有多少个整数能被 7 整除。先推演，最后一行严格写 答案=N。工具结果缺少基数时，只回复 基数缺失。",
+		},
+	)
+
+	payload := map[string]any{
+		"model":     s.model,
+		"stream":    true,
+		"reasoning": map[string]any{"effort": effort, "summary": "auto"},
+		"tools": []any{
+			map[string]any{
+				"type":        "function",
+				"name":        "get_seed",
+				"description": "读取计算所需的整数基数",
+				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+		},
+		"input": input,
+	}
+
+	t, err := s.responsesStream(payload)
+	switch {
+	case err != nil:
+		s.record("Responses 流式请求", "FAIL", "请求失败: "+err.Error()+" 响应头: "+truncate(t.rawHead, 80))
+		return
+	case t.errMsg != "":
+		s.record("Responses 流式请求", "FAIL", "流内错误事件: "+t.errMsg)
+		return
+	case !t.completed:
+		s.record("Responses 流式请求", "FAIL", fmt.Sprintf("缺少 response.completed 终止事件 (收到 %d 帧)", t.frames))
+		return
+	default:
+		s.record("Responses 流式请求", "PASS", fmt.Sprintf("HTTP %d, %d 帧, 正文 %d 字, 推理 %d 字",
+			t.status, t.frames, len([]rune(t.content)), len([]rune(t.reasoning))))
+	}
+
+	supportsReasoning := s.modelDef == nil || s.modelDef.SupportsReasoning
+	switch {
+	case strings.Contains(t.reasoning, hostReasoningPlaceholder) || strings.Contains(t.content, hostReasoningPlaceholder):
+		s.record("Responses 未复读占位符", "FAIL", "响应复读了 [reasoning unavailable]: 推理="+truncate(t.reasoning, 40)+" 正文="+truncate(t.content, 40))
+	case supportsReasoning && strings.TrimSpace(t.reasoning) == "":
+		s.record("Responses 未复读占位符", "FAIL", "上限档推演题未返回推理摘要")
+	default:
+		s.record("Responses 未复读占位符", "PASS", "本次响应的推理与正文均未复读 [reasoning unavailable]")
+	}
+
+	lines := strings.Split(strings.TrimSpace(t.content), "\n")
+	lastLine := strings.TrimSpace(lines[len(lines)-1])
+	if lastLine == "答案=15" {
+		s.record("Responses 工具续跑", "PASS", "末行答案与工具结果匹配: "+lastLine)
+	} else {
+		s.record("Responses 工具续跑", "FAIL", "预期末行为 答案=15，实际为 "+truncate(lastLine, 60))
+	}
+}
+
 // runTools 覆盖工具定义透传与工具结果消费, 两轮之间要把调用原样带回。
 func runTools(s *session) {
 	fmt.Println("[工具调用] 工具定义透传 + 工具结果消费")
 	checkTools(s)
 }
 
-// runToolChoice 覆盖客户端工具选择意图是否原样上行: 未指定时回落 auto 的基准由 tools 场景守着。
-// 上游若只认 auto, none 这条会照旧调用工具、点名函数这条会调用别的函数或直接报错。
+// runToolChoice 观察工具选择约束下模型的调用行为。
+// 点名函数必须挂在「至少两个工具 + 提示词指向另一个工具」上: 若只给唯一工具且提示词本身要求查它,
+// 即使插件把 tool_choice 删掉或改回 auto 也会因模型别无选择而假绿。
 func runToolChoice(s *session) {
-	fmt.Println("[工具选择] tool_choice 与 parallel_tool_calls 应原样上行")
-	tools := []toolSpec{weatherTool()}
-	prompt := []chatMessage{{Role: "user", Content: "北京现在天气怎么样? 必须用工具查, 不要凭记忆回答"}}
+	fmt.Println("[工具选择] 点名函数、禁止调用与并行调用行为")
+	twoTools := []toolSpec{timeTool(), weatherTool()}
+	timePrompt := []chatMessage{{Role: "user", Content: "现在东京几点了? 必须用工具查, 不要凭记忆回答"}}
 
-	named, namedErr := s.chat(chatRequest{messages: prompt, tools: tools, toolChoice: map[string]any{
+	named, namedErr := s.chat(chatRequest{messages: timePrompt, tools: twoTools, toolChoice: map[string]any{
 		"type": "function", "function": map[string]any{"name": "get_weather"},
 	}})
 	switch {
 	case namedErr != nil:
 		s.record("点名函数", "FAIL", "请求失败: "+namedErr.Error()+" 响应头: "+truncate(named.rawHead, 80))
 	case len(named.toolCalls) == 1 && named.toolCalls[0].Function.Name == "get_weather":
-		s.record("点名函数", "PASS", "finish="+named.finishReason+", 调用 "+named.toolCalls[0].Function.Name)
+		s.record("点名函数", "PASS", "finish="+named.finishReason+", 逆提示词强制调用 "+named.toolCalls[0].Function.Name)
 	default:
-		s.record("点名函数", "FAIL", fmt.Sprintf("点名的函数未被调用: finish=%s, tool_calls=%d, 正文 %s",
-			named.finishReason, len(named.toolCalls), truncate(named.content, 40)))
+		called := ""
+		if len(named.toolCalls) > 0 {
+			called = named.toolCalls[0].Function.Name
+		}
+		s.record("点名函数", "FAIL", fmt.Sprintf("点名 get_weather 未生效: finish=%s, 实际调用=%q(%d个), 正文 %s",
+			named.finishReason, called, len(named.toolCalls), truncate(named.content, 40)))
 	}
 
-	forbidden, forbiddenErr := s.chat(chatRequest{messages: prompt, tools: tools, toolChoice: "none"})
+	weatherOnly := []toolSpec{weatherTool()}
+	weatherPrompt := []chatMessage{{Role: "user", Content: "北京现在天气怎么样? 必须用工具查, 不要凭记忆回答"}}
+	forbidden, forbiddenErr := s.chat(chatRequest{messages: weatherPrompt, tools: weatherOnly, toolChoice: "none"})
 	switch {
 	case forbiddenErr != nil:
 		s.record("tool_choice=none", "FAIL", "请求失败: "+forbiddenErr.Error()+" 响应头: "+truncate(forbidden.rawHead, 80))
@@ -787,14 +994,17 @@ func runToolChoice(s *session) {
 	}
 
 	noParallel := false
-	parallel, parallelErr := s.chat(chatRequest{messages: prompt, tools: tools, parallelToolCalls: &noParallel})
+	twoCitiesPrompt := []chatMessage{{Role: "user", Content: "北京和上海现在天气分别怎么样? 必须用工具查, 不要凭记忆回答"}}
+	parallel, parallelErr := s.chat(chatRequest{messages: twoCitiesPrompt, tools: weatherOnly, parallelToolCalls: &noParallel})
 	switch {
 	case parallelErr != nil:
 		s.record("parallel_tool_calls=false", "FAIL", "请求失败: "+parallelErr.Error()+" 响应头: "+truncate(parallel.rawHead, 80))
+	case len(parallel.toolCalls) == 0:
+		s.record("parallel_tool_calls=false", "WARN", "模型未调用工具，未测到并行约束")
 	case len(parallel.toolCalls) > 1:
 		s.record("parallel_tool_calls=false", "FAIL", fmt.Sprintf("仍返回 %d 个并发调用", len(parallel.toolCalls)))
 	default:
-		s.record("parallel_tool_calls=false", "PASS", fmt.Sprintf("HTTP %d, tool_calls=%d", parallel.status, len(parallel.toolCalls)))
+		s.record("parallel_tool_calls=false", "PASS", "本次只返回 1 个工具调用")
 	}
 }
 
@@ -1010,7 +1220,7 @@ func checkTools(s *session) {
 	}
 	call := streamed.toolCalls[0]
 	second := append(append([]chatMessage(nil), first...),
-		chatMessage{Role: "assistant", ToolCalls: []toolCall{call}},
+		chatMessage{Role: "assistant", ReasoningContent: streamed.reasoning, ToolCalls: []toolCall{call}},
 		chatMessage{Role: "tool", ToolCallID: call.ID, Content: toolResult},
 	)
 	consumed, consumedErr := s.chat(chatRequest{messages: second, stream: true, tools: tools})
@@ -1023,6 +1233,21 @@ func checkTools(s *session) {
 		return
 	}
 	s.record("工具结果消费", "FAIL", "模型没有引用工具结果, 实际回复 "+truncate(consumed.content, 60))
+}
+
+func timeTool() toolSpec {
+	var spec toolSpec
+	spec.Type = "function"
+	spec.Function.Name = "get_time"
+	spec.Function.Description = "查询指定城市或时区的当前时间"
+	spec.Function.Parameters = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"zone": map[string]any{"type": "string", "description": "城市或时区名"},
+		},
+		"required": []string{"zone"},
+	}
+	return spec
 }
 
 func weatherTool() toolSpec {

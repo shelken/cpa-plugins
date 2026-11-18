@@ -10,7 +10,7 @@
 
 ## 断言子集
 
-本特性无沙箱离线断言, 全部走下方 Driving it 的管理面接口。相关场景: 注入凭据后的真实对话 (`verify-chat.go -scenarios session`) 依赖本特性产出的 `status: active` 凭据; 改了凭据结构 (`ToStorageJSON` 字段) 后必须重跑该场景。
+本特性无沙箱离线断言, 全部走下方 Driving it 的管理面接口。相关场景: 注入凭据后的真实对话 (`verify-chat.go -scenarios session`) 依赖本特性产出的 `status: active` 凭据; 改了凭据结构 (`ToStorageJSON` / `ToAuthData` 元数据与刷新排期字段) 后必须跑插件单测 (`credential_merge_test.go`) 并重跑该场景。
 
 ## How to get to it (user POV)
 
@@ -22,23 +22,26 @@
 
 Preconditions:
 
-- 插件已启用 (`effective_enabled` 为 `true`)
-- 管理面鉴权接口可达
+- 本地沙箱插件已启用 (`effective_enabled` 为 `true`), 管理密钥传 `-token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key`
+- 管理面鉴权接口可达 (默认 `http://127.0.0.1:18317`)
 
-- **查询已有凭据。** 确认当前凭据与渠道归属 (`account_type` 由宿主按凭据里的 OAuth 元数据推导, 插件渠道实测为 `oauth`; 不作为「是否已登录」的判据, 只看 `provider` 与 `status`):
+- **查询已有凭据。** 确认当前凭据、文件名与渠道归属 (`account_type` 由宿主按凭据里的 OAuth 元数据推导, 插件渠道实测为 `oauth`; 不作为「是否已登录」的判据, 只看 `provider` 与 `status`; 下载与搬运需要带 `.json` 的 `name` 字段, 裸 `id` 会被拒 400):
   ```bash
-  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/auth-files | jq '.files[] | {id, provider, status}'
+  go run scripts/management-api.go -token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key \
+    -path /v0/management/auth-files | jq '.files[] | {id, name, provider, status}'
   ```
   目标账号 `provider` 与插件 id 一致 (如 `workbuddy`), `status` 为 `active`
 
-- **发起登录。** 生成新授权会话, 响应含授权链接 `url` 与会话 `state`:
+- **发起登录。** 生成新授权会话, 响应含授权链接 `url` 与非空会话 `state`:
   ```bash
-  go run scripts/management-api.go -base http://<host>:8317 -path /v0/management/<provider>-auth-url
+  go run scripts/management-api.go -token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key \
+    -path /v0/management/<provider>-auth-url
   ```
 
-- **检查登录结果。** 外部扫码确认后轮询直至 `status` 为 `ok`; 未扫码中间态是 `wait` (宿主把插件内部的 `pending` 转换成 `wait`), 断言 `pending` 会误报。`state` 未知或过期时接口仍返回 `HTTP 200`, 但 body 是 `{"status":"error","error":"unknown or expired state"}`——所以判据读 body 里的 `status` 字段, 不能只看状态码:
+- **检查登录结果。** 外部扫码确认后轮询直至 `status` 为 `ok` (须先确认 `<state>` 非空: 空 `state` 时宿主直接返回 `{"status":"ok"}` 会假绿); 未扫码中间态是 `wait` (宿主把插件内部的 `pending` 转换成 `wait`), 断言 `pending` 会误报。`state` 未知或过期时接口仍返回 `HTTP 200`, 但 body 是 `{"status":"error","error":"unknown or expired state"}`——所以判据读 body 里的 `status` 字段, 不能只看状态码:
   ```bash
-  go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/get-auth-status?state=<state>'
+  go run scripts/management-api.go -token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key \
+    -path '/v0/management/get-auth-status?state=<state>'
   ```
 
 - **二次确认凭据归属。** 登录成功后重跑第一步的查询, 新条目 `provider` 与 `status` 满足判据。列表读的是宿主内存里的登记记录, 证明宿主已登记该账号, 不证明文件已落盘; 要落盘证据用 `GET /v0/management/auth-files/download?name=<file>` 确认文件存在
@@ -54,7 +57,7 @@ Preconditions:
 
 - 已登录但调用报 unknown provider -> 查 `auth-files` 对应条目的 `provider` 是否与插件 id 一致
 - 鉴权失败后请求直接 503 -> 宿主触发凭据失败冷却熔断, 等冷却结束或重启宿主; 冷却期失败不能当功能失败
-- 登录中途终止残留悬挂会话 -> `go run scripts/management-api.go -base http://<host>:8317 -path '/v0/management/oauth-session?state=<state>' -method DELETE` 释放服务端会话; 脚本默认 GET, 缺 `-method DELETE` 会 404; 缺 `state` 返回 `400 missing state`, 成功返回 `{"status":"ok","cancelled":<bool>}`, 会话已不存在时 `cancelled` 为 `false`; 取消后再查 `get-auth-status` 应为 `unknown or expired state`
-- 沙箱注入后 `auth-files` 里同一文件名出现两条 -> v8.0.4 宿主经 POST 上传时按文件路径登记一条, 文件监听器经插件解析又按 `userId` 登记一条, 两条共用同一文件; 用 `name`/`id`/`auth_index` 区分, 不能用条数判断文件数
+- 登录中途终止残留悬挂会话 -> `go run scripts/management-api.go -token-file ~/.cache/cpa-plugins/sandbox/<id>/management-key -path '/v0/management/oauth-session?state=<state>' -method DELETE` 释放服务端 pending 会话; 脚本默认 GET, 缺 `-method DELETE` 会 404; 缺 `state` 返回 `400 missing state`, pending 态取消成功返回 `{"status":"ok","cancelled":true}` 且再查 `get-auth-status` 为 `unknown or expired state` (已完成或已报错态返回 `cancelled:false` 且保留原状态)
+- 沙箱注入后 `auth-files` 里同一文件名出现两条 -> v8 宿主经 POST 上传时按文件名登记一条 (`id` 为 `<file.json>`), 文件监听器经插件解析又按 `userId` 登记一条 (`id` 为 `<userId>`), 两条共用同一文件且 `name` 与 `auth_index` 完全相同; 区分两条记录看 `id`, 统计真实文件数按 `name` 或 `auth_index` 去重
 - 每次对话后宿主日志出现 `auth file changed (REMOVE)` 与 `(WRITE)` 交替 -> 宿主在记录请求结果后持久化凭据, 插件凭据走临时文件原子替换, 监听器把它看成先删后写; 这不是插件在刷新 token, 只要记录仍为 `active` 就不影响验收
 - 登录链路驱动沙箱时管理密钥用 `-token-file`, 生产密钥对沙箱必然 401
