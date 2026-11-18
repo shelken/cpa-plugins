@@ -613,3 +613,59 @@ func TestExecuteStreamStopsReadingAfterEmitFailure(t *testing.T) {
 		t.Errorf("emit 失败后应立即退出并关上游: reads=%d emitted=%d closed=%v", fake.reads, len(fake.emitted), fake.streamClosed)
 	}
 }
+
+func TestBuildChatRequestBodyStripsHostReasoningPlaceholder(t *testing.T) {
+	m, err := parseManifest(defaultStaticConfigBytes)
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	trueVal := true
+	cfg := &PluginConfig{Enabled: true, EnableModelPrefix: &trueVal, ModelPrefix: "qwenworkcn"}
+
+	rawReq := `{
+		"model": "qwenworkcn/flash",
+		"messages": [
+			{"role": "user", "content": "step 1"},
+			{
+				"role": "assistant",
+				"content": "",
+				"reasoning_content": "  [reasoning unavailable]  ",
+				"tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "ls", "arguments": "{}"}}]
+			},
+			{"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+			{"role": "assistant", "content": "", "reasoning_content": "[reasoning unavailable]"},
+			{
+				"role": "assistant",
+				"content": "",
+				"reasoning_content": "real-plan",
+				"tool_calls": [{"id": "call_2", "type": "function", "function": {"name": "pwd", "arguments": "{}"}}]
+			},
+			{"role": "tool", "tool_call_id": "call_2", "content": "/tmp"},
+			{"role": "user", "content": "next"}
+		]
+	}`
+
+	_, bodyBytes, err := buildChatRequestBody(cfg, []byte(rawReq), m, "11111111-2222-3333-4444-555555555555")
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+
+	var env struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(bodyBytes, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+
+	// 预期消息序列: user, assistant(call_1), tool(call_1), assistant(call_2), tool(call_2), user
+	if len(env.Messages) != 6 {
+		t.Fatalf("messages len = %d, want 6; got %v", len(env.Messages), env.Messages)
+	}
+
+	if _, has := env.Messages[1]["reasoning_content"]; has {
+		t.Errorf("call_1 assistant 的占位符应被剥离, got %v", env.Messages[1]["reasoning_content"])
+	}
+	if env.Messages[3]["reasoning_content"] != "real-plan" {
+		t.Errorf("真实历史思考应保留在 reasoning_content, got %v", env.Messages[3]["reasoning_content"])
+	}
+}
