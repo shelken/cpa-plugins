@@ -8,22 +8,22 @@
       {
         "goarch": "arm64",
         "goos": "darwin",
-        "sha256": "",
-        "size": 0,
+        "sha256": "6885d164b4367e6142a6ae51b183af88e53e070cb763d75ed3fd5c230602f726",
+        "size": 2777733,
         "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.8/qwenworkcn_0.1.8_darwin_arm64.zip"
       },
       {
         "goarch": "amd64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "e3e0bc5468debdb06d17465727e3ef3525450f83a79e3d3ed973a7c5743f981b",
+        "size": 5448419,
         "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.8/qwenworkcn_0.1.8_linux_amd64.zip"
       },
       {
         "goarch": "arm64",
         "goos": "linux",
-        "sha256": "",
-        "size": 0,
+        "sha256": "6d25b4974bf2ea8ceed8a39c9ed11491e99c0d5b9c8063557f225fb5ba8ffaa4",
+        "size": 4936575,
         "url": "https://github.com/shelken/cpa-plugins/releases/download/qwenworkcn%2Fv0.1.8/qwenworkcn_0.1.8_linux_arm64.zip"
       }
     ],
